@@ -270,9 +270,9 @@ class Result:
                 f"maxDD {100*max_dd:4.1f}%  avg/bet ${avg:+.3f}")
 
 
-def run(markets, strategy, principal, fee, walk_forward, min_stake=1.0):
+def run(markets, strategy, principal, fee, walk_forward, min_stake=1.0, prior_seed=None):
     res = Result(strategy=strategy.name, principal=principal, bankroll=principal)
-    prior = []
+    prior = list(prior_seed) if prior_seed else []
     for m in markets:
         strategy.reset(variance_rate(prior) if walk_forward else variance_rate(markets))
         # replay the hour; strategy may enter once
@@ -308,6 +308,82 @@ def default_strategies():
     ]
 
 
+# --------------------------------------------------------------------------- #
+# Training — grid search with a chronological train/test split. The point is
+# NOT to find the biggest in-sample number (that is overfitting); it is to see
+# whether a config that wins on the training hours *also* wins on unseen hours.
+# --------------------------------------------------------------------------- #
+import itertools  # noqa: E402
+
+GRIDS = {
+    "fair_value": {
+        "threshold": [0.02, 0.03, 0.04, 0.05, 0.06],
+        "decision_min": [45.0, 30.0, 15.0, 10.0],
+        "kelly": [0.25, 0.5],
+    },
+    "momentum": {
+        "lookback_min": [5.0, 10.0, 15.0, 20.0],
+        "min_move_bps": [3.0, 5.0, 10.0, 20.0],
+        "decision_min": [30.0, 20.0, 10.0],
+    },
+    "favorite": {
+        "min_prob": [0.55, 0.60, 0.70, 0.80],
+        "decision_min": [30.0, 20.0, 10.0],
+    },
+}
+BUILDERS = {"fair_value": FairValue, "momentum": Momentum, "favorite": Favorite}
+
+
+def build(family, params):
+    return BUILDERS[family](**params)
+
+
+def train(markets, family, train_frac, principal, fee):
+    split = max(1, int(len(markets) * train_frac))
+    train_m, test_m = markets[:split], markets[split:]
+    if not test_m:
+        print("Not enough markets to hold out a test set.")
+        return
+
+    grid = GRIDS[family]
+    keys = list(grid)
+    rows = []
+    for values in itertools.product(*(grid[k] for k in keys)):
+        params = dict(zip(keys, values))
+        tr = run(train_m, build(family, params), principal, fee, walk_forward=True)
+        # test uses the train hours as prior history for the volatility estimate
+        te = run(test_m, build(family, params), principal, fee,
+                 walk_forward=True, prior_seed=train_m)
+        rows.append((params, tr, te))
+
+    # Rank by training P&L (that is what "training" would pick).
+    rows.sort(key=lambda r: r[1].bankroll, reverse=True)
+    print(f"## Training: {family}  ({len(train_m)} train / {len(test_m)} test hours, "
+          f"{len(rows)} configs)\n")
+    print(f"  {'params':44} {'train P&L':>12} {'test P&L':>12}  verdict")
+    for params, tr, te in rows[:10]:
+        tr_pnl = tr.bankroll - principal
+        te_pnl = te.bankroll - principal
+        if tr_pnl > 0 and te_pnl > 0:
+            verdict = "holds out"
+        elif tr_pnl > 0 and te_pnl <= 0:
+            verdict = "OVERFIT"
+        else:
+            verdict = "weak"
+        ps = ",".join(f"{k}={v}" for k, v in params.items())
+        print(f"  {ps:44} {tr_pnl:>+11.2f} {te_pnl:>+11.2f}  {verdict} "
+              f"({tr.n}/{te.n} bets)")
+
+    best = rows[0]
+    holds = sum(1 for _, tr, te in rows
+                if tr.bankroll > principal and te.bankroll > principal)
+    print(f"\n  Best-on-train config: {best[0]}")
+    print(f"  Its out-of-sample P&L: ${best[2].bankroll - principal:+.2f}")
+    print(f"  Configs green on BOTH train and test: {holds}/{len(rows)}")
+    print("\n  Reminder: with few hours this is noise. A real edge shows up as many")
+    print("  configs holding out on hundreds of markets, not one lucky in-sample peak.")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--glob", action="append",
@@ -320,6 +396,10 @@ def main():
     ap.add_argument("--no-walk-forward", action="store_true")
     ap.add_argument("--strategy", choices=["fair_value", "momentum", "favorite", "all"],
                     default="all")
+    ap.add_argument("--train", choices=["fair_value", "momentum", "favorite"],
+                    help="grid-search a strategy family with a train/test split")
+    ap.add_argument("--train-frac", type=float, default=0.6,
+                    help="chronological fraction of markets used for training")
     args = ap.parse_args()
 
     patterns = args.glob or [
@@ -337,15 +417,19 @@ def main():
         print("No usable markets in the data yet.")
         return
 
-    strategies = default_strategies()
-    if args.strategy != "all":
-        strategies = [s for s in strategies if s.name.startswith(args.strategy)]
-
     wf = not args.no_walk_forward
     assets = sorted({m.asset for m in markets})
     print("# Hourly paper betting engine\n")
     print(f"Markets: {len(markets)}  assets: {assets}  principal: ${args.principal:.2f}  "
           f"fee: {args.fee:.3%}  vol: {'walk-forward' if wf else 'in-sample'}\n")
+
+    if args.train:
+        train(markets, args.train, args.train_frac, args.principal, args.fee)
+        return
+
+    strategies = default_strategies()
+    if args.strategy != "all":
+        strategies = [s for s in strategies if s.name.startswith(args.strategy)]
     print("## Strategy results (paper only — no real orders)")
     for strat in strategies:
         print("  " + run(markets, strat, args.principal, args.fee, wf).report())
