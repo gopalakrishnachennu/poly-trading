@@ -30,22 +30,30 @@ fi
 # Reuse a healthy local gateway when the operator already has one running.
 # This prevents a second process from producing a noisy AddrInUse failure and
 # avoids killing a process this wrapper did not start during cleanup.
+# Prefer an optimized release gateway. A debug build pegs CPU and stalls under
+# a long session, which makes the terminal flap to NO_TRADE; release stays idle.
+release_bin="$project_root/target/release/terminal-projection"
+debug_bin="$project_root/target/debug/terminal-projection"
 if command -v curl >/dev/null 2>&1 && curl -fsS --max-time 1 http://127.0.0.1:8088/healthz >/dev/null 2>&1; then
   echo "reusing healthy terminal-projection on http://127.0.0.1:8088" >&2
-elif command -v cargo >/dev/null 2>&1; then
-  cargo run -p terminal-projection &
+elif [ -x "$release_bin" ]; then
+  "$release_bin" &
   gateway_pid=$!
   gateway_owned=1
-elif [ -x "$project_root/target/debug/terminal-projection" ]; then
-  # Keep the local terminal usable on operator hosts that only have the
-  # prebuilt, audited gateway artifact (for example, a workstation without
-  # the Rust toolchain installed). The binary remains read-only and binds to
-  # the same loopback endpoint as the source build.
-  "$project_root/target/debug/terminal-projection" &
+elif command -v cargo >/dev/null 2>&1; then
+  # Build/run the optimized profile (first run compiles once, then is cached).
+  cargo run --release -p terminal-projection &
+  gateway_pid=$!
+  gateway_owned=1
+elif [ -x "$debug_bin" ]; then
+  # Last resort on a host without the Rust toolchain or a release artifact.
+  # The debug binary is fine for short sessions but not long-running use.
+  echo "warning: running the DEBUG gateway; rebuild with 'cargo build --release -p terminal-projection' for long sessions" >&2
+  "$debug_bin" &
   gateway_pid=$!
   gateway_owned=1
 else
-  echo "terminal-projection requires cargo or target/debug/terminal-projection" >&2
+  echo "terminal-projection requires cargo or a prebuilt target/*/terminal-projection" >&2
   exit 1
 fi
 

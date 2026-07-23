@@ -12,8 +12,10 @@ clears the display and shows `GLOBAL NO_TRADE`.
 ## Prerequisites
 
 - Node.js `>=22.13.0`
-- For `dev:full`: a Rust toolchain (`cargo`) or a prebuilt
-  `target/debug/terminal-projection` binary in the repository root.
+- For `dev:full`: a Rust toolchain (`cargo`) or a prebuilt gateway binary. It
+  prefers `target/release/terminal-projection` (build once with
+  `cargo build --release -p terminal-projection`); a debug build works for
+  short sessions but pegs CPU over long runs.
 
 ## Quick start
 
