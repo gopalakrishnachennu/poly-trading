@@ -36,6 +36,7 @@ import glob
 import json
 import math
 import statistics
+import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 
@@ -570,6 +571,7 @@ def main():
                     help="grid-search a strategy family with a train/test split")
     ap.add_argument("--train-frac", type=float, default=0.6,
                     help="chronological fraction of markets used for training")
+    ap.add_argument("--json", help="also write a machine-readable report to this path")
     args = ap.parse_args()
 
     patterns = args.glob or [
@@ -601,8 +603,36 @@ def main():
     if args.strategy != "all":
         strategies = [s for s in strategies if s.name.startswith(args.strategy)]
     print("## Strategy results (paper only — no real orders)")
+    results = []
     for strat in strategies:
-        print("  " + run(markets, strat, args.principal, args.fee, wf).report())
+        res = run(markets, strat, args.principal, args.fee, wf)
+        results.append(res)
+        print("  " + res.report())
+
+    if args.json:
+        report = {
+            "generated_at_ms": int(time.time() * 1000),
+            "paper_only": True,
+            "markets": len(markets),
+            "assets": assets,
+            "principal": args.principal,
+            "walk_forward": wf,
+            "strategies": [{
+                "name": r.strategy,
+                "bets": r.n,
+                "wins": sum(1 for b in r.bets if b.won),
+                "pnl": round(r.bankroll - r.principal, 4),
+                "bankroll": round(r.bankroll, 4),
+                "trades": [{
+                    "t": b.t_enter, "asset": b.asset, "market": b.market, "side": b.side,
+                    "price": round(b.price, 4), "stake": round(b.stake, 2),
+                    "won": b.won, "pnl": round(b.pnl, 4),
+                } for b in r.bets[-25:]],
+            } for r in results],
+        }
+        with open(args.json, "w") as f:
+            json.dump(report, f, indent=1)
+        print(f"\nWrote machine-readable report to {args.json}")
 
     print(f"\nStatistical power: {len(markets)} independent markets. "
           f"{'Illustrative only — need hundreds for a real verdict.' if len(markets) < 200 else ''}")

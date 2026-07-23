@@ -144,6 +144,27 @@ kbd { border: 1px solid var(--line); background: var(--surface-3); padding: 2px 
 .neural-readout.lean-up b { color: var(--green); }
 .neural-readout.lean-down b { color: var(--red); }
 .neural-readout span { opacity: .85; }
+/* Betting-engine backtest panel */
+.engine-panel .panel-body { display: flex; flex-direction: column; }
+.engine-body { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.engine-meta { display: flex; justify-content: space-between; gap: 10px; padding: 7px 9px; color: var(--faint); font-size: 7px; border-bottom: 1px solid var(--line); }
+.engine-strategies { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 3px; padding: 6px; border-bottom: 1px solid var(--line); }
+.engine-strategies button { text-align: left; border: 1px solid var(--line); background: #0c1216; padding: 6px 7px; cursor: pointer; display: grid; gap: 3px; min-width: 0; }
+.engine-strategies button:hover { border-color: var(--line-bright); }
+.engine-strategies button.active { border-color: var(--cyan); background: #10202a; }
+.engine-strategies button span { color: #b3bfc5; font-size: 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.engine-strategies button b { font-size: 12px; }
+.engine-strategies button small { color: var(--faint); font-size: 6.5px; }
+.table-head.engine, .engine-row { display: grid; grid-template-columns: 52px 1.2fr 42px 48px 52px 46px 58px; gap: 6px; align-items: center; }
+.engine-row { min-height: 25px; padding: 0 9px; border-bottom: 1px solid #182126; font-size: 8px; color: var(--muted); }
+.engine-row time { color: var(--faint); }
+.engine-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.engine-row strong { text-align: right; }
+.engine-trades { flex: 1; min-height: 0; overflow: auto; }
+.engine-note { border-top: 1px solid var(--line); background: var(--amber-soft); border-left: 2px solid var(--amber); padding: 8px 9px; }
+.engine-note strong { display: block; color: var(--amber); font-size: 8px; letter-spacing: .09em; margin-bottom: 4px; }
+.engine-note span { color: #d0ad67; font-size: 7px; line-height: 1.5; }
+
 /* Full-screen NEURAL workspace */
 .neural-panel .panel-body { display: flex; flex-direction: column; }
 .neural-stage { flex: 1; min-height: 300px; position: relative; background: radial-gradient(ellipse at 50% 45%, #0c2129 0, #06090b 76%); box-shadow: inset 0 0 90px rgba(57,199,255,.07); }

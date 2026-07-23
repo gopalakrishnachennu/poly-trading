@@ -72,6 +72,9 @@ analyze: ## Complete-set arbitrage opportunity scan over captured data
 backtest: ## Directional fair-value walk-forward backtest with sensitivity sweep
 	python3 scripts/backtest_fair_value.py --walk-forward --sweep
 
+engine-report: ## Refresh the simulated bets shown in the terminal (F4 POSITIONS)
+	python3 scripts/hourly_engine.py --json var/engine-report.json
+
 clean: ## Remove Rust build artifacts and the downloaded TLC jar
 	cargo clean
 	rm -f $(TLA_JAR)

@@ -479,6 +479,10 @@ function LiveChart({ points, target }: { points: number[]; target?: string }) {
   return <canvas className="live-canvas" ref={canvas} role="img" aria-label="Received reference-price history" />;
 }
 
+type EngineTrade = { t: number; asset: string; market: string; side: string; price: number; stake: number; won: boolean; pnl: number };
+type EngineStrategy = { name: string; bets: number; wins: number; pnl: number; bankroll: number; trades: EngineTrade[] };
+type EngineReport = { generated_at_ms: number; markets: number; assets: string[]; principal: number; walk_forward: boolean; strategies: EngineStrategy[] };
+
 const WORKSPACES = ["MARKETS", "NEURAL", "RISK", "POSITIONS", "SETTLEMENT", "OPERATIONS", "AUDIT", "SETTINGS"] as const;
 type Workspace = (typeof WORKSPACES)[number];
 
@@ -491,6 +495,9 @@ export default function Terminal() {
   const [workspace, setWorkspace] = useState<Workspace>("MARKETS");
   const [query, setQuery] = useState("");
   const [commandOpen, setCommandOpen] = useState(false);
+  const [engine, setEngine] = useState<EngineReport | null>(null);
+  const [engineReason, setEngineReason] = useState("loading offline engine report");
+  const [engineStrategy, setEngineStrategy] = useState(0);
   const commandRef = useRef<HTMLInputElement>(null);
   // Keep the server and first client render deterministic; the clock starts
   // after hydration so the terminal does not throw away its SSR tree.
@@ -736,6 +743,23 @@ export default function Terminal() {
     return { pUp, side: pUp >= 0.5 ? "UP" : "DOWN", confidence: Math.min(1, Math.abs(pUp - 0.5) * 2), edge: pUp - upMid };
   }, [asset, history, selected, now]);
 
+  // Offline betting-engine backtest report (static file, refreshed on demand).
+  useEffect(() => {
+    let disposed = false;
+    const read = async () => {
+      try {
+        const response = await fetch("/api/engine", { cache: "no-store" });
+        const payload = await response.json() as { available: boolean; reason?: string; report?: EngineReport };
+        if (disposed) return;
+        if (payload.available && payload.report) { setEngine(payload.report); setEngineReason(""); }
+        else { setEngine(null); setEngineReason(payload.reason ?? "engine report unavailable"); }
+      } catch { if (!disposed) setEngineReason("engine report unavailable"); }
+    };
+    void read();
+    const timer = window.setInterval(read, 30_000);
+    return () => { disposed = true; window.clearInterval(timer); };
+  }, []);
+
   const commands = useMemo(() => {
     const list: { label: string; hint: string; run: () => void }[] = [];
     WORKSPACES.forEach((ws, index) => list.push({ label: `Go to ${ws}`, hint: `F${index + 1}`, run: () => setWorkspace(ws) }));
@@ -813,6 +837,31 @@ export default function Terminal() {
         <div className="table-head positions"><span>MARKET</span><span>QTY</span><span>COST</span><span>STATE</span><span>P&amp;L</span></div>{paper?.trades.length ? <div className="paper-position-table">{paper.trades.slice().reverse().slice(0, 4).map((trade) => <div className="paper-position-row" key={trade.trade_id}><strong>{trade.asset}</strong><span>{quantity(trade.quantity_micros)}</span><span>{usd(trade.cost_micros)}</span><span>{trade.state}</span><b>{signedUsd(trade.locked_pnl_micros)}</b></div>)}</div> : <div className="empty-position"><span>—</span><strong>NO SIMULATED PAIRS</strong><small>Conservative NO_TRADE decisions are recorded as evidence; no payout is assumed.</small></div>}<div className="settlement-row"><span><StatusDot tone="amber"/>PENDING PAYOUT {usd(pendingPayout.toString())}</span><span>COMMITTED {usd(pendingCost.toString())}</span><strong className="amber-text">NOT SPENDABLE</strong></div>
       </Panel>
   );
+  const selectedStrategy = engine?.strategies[Math.min(engineStrategy, (engine.strategies.length || 1) - 1)];
+  const pEngine = (
+      <Panel code="E1" title="BETTING ENGINE / SIMULATED BETS" className="engine-panel"
+             action={<span className="badge-safe unavailable">BACKTEST · PAPER</span>}>
+        {engine ? <div className="engine-body">
+          <div className="engine-meta"><span>{engine.markets} MARKETS · {engine.assets.join("+")} · ${engine.principal.toFixed(0)} PRINCIPAL</span><span>{engine.walk_forward ? "WALK-FORWARD" : "IN-SAMPLE"} · {utcTime(engine.generated_at_ms)}</span></div>
+          <div className="engine-strategies">
+            {engine.strategies.map((s, index) => <button key={s.name} className={index === engineStrategy ? "active" : ""} onClick={() => setEngineStrategy(index)}>
+              <span>{s.name}</span><b className={s.pnl >= 0 ? "positive" : "negative"}>{s.pnl >= 0 ? "+" : ""}{s.pnl.toFixed(2)}</b><small>{s.bets} bets · {s.bets ? Math.round(100 * s.wins / s.bets) : 0}% win</small>
+            </button>)}
+          </div>
+          <div className="table-head engine"><span>TIME</span><span>MKT</span><span>SIDE</span><span>ENTRY</span><span>STAKE</span><span>RESULT</span><span>P&amp;L</span></div>
+          <div className="engine-trades">
+            {selectedStrategy?.trades.length ? selectedStrategy.trades.slice().reverse().map((t) => <div className="engine-row" key={`${t.market}-${t.t}`}>
+              <time>{utcTime(t.t).slice(0, 8)}</time><span>{t.asset} {t.market}</span>
+              <b className={t.side === "UP" ? "positive" : "negative"}>{t.side}</b>
+              <span>{t.price.toFixed(3)}</span><span>${t.stake.toFixed(2)}</span>
+              <span className={t.won ? "positive" : "negative"}>{t.won ? "WON" : "LOST"}</span>
+              <strong className={t.pnl >= 0 ? "positive" : "negative"}>{t.pnl >= 0 ? "+" : ""}{t.pnl.toFixed(2)}</strong>
+            </div>) : <div className="paper-empty">THIS STRATEGY TOOK NO BETS ON THE CAPTURED MARKETS</div>}
+          </div>
+          <div className="engine-note"><strong>BACKTEST EVIDENCE ONLY</strong><span>Simulated bets replayed over captured hours by scripts/hourly_engine.py. Not live, not orders, no capital. {engine.markets < 200 ? `${engine.markets} markets is far too few to judge an edge.` : ""}</span></div>
+        </div> : <div className="paper-empty">{engineReason}</div>}
+      </Panel>
+  );
   const pHealth = (
       <Panel code="06" title="SYSTEM HEALTH" className="health-panel" action={<button className="text-button" onClick={() => setPaused((value) => !value)}>{paused ? "RESUME" : "PAUSE CLIENT"}</button>}>
         <div className="health-list"><div><span><StatusDot tone={statusTone}/>Projection gateway</span><b>{mode.toUpperCase()}</b></div><div><span><StatusDot tone={ready ? "green" : "red"}/>Atomic assets</span><b>{ready ? "BTC + ETH" : "NONE"}</b></div><div><span><StatusDot tone={paper?.active ? "green" : "amber"}/>Paper recorder</span><b>{paper?.active ? `${paper.events_recorded} EVENTS` : "IDLE"}</b></div><div><span><StatusDot tone={replayHealthy ? "green" : "amber"}/>Journal replay</span><b>{replayHealthy ? "VERIFIED" : "PENDING"}</b></div><div><span><StatusDot tone="blue"/>Credentials / transport</span><b>ABSENT</b></div><div><span><StatusDot tone={snapshot?.no_trade ? "green" : "red"}/>NO_TRADE contract</span><b>{snapshot?.no_trade ? "ENFORCED" : "CLIENT FAIL-CLOSED"}</b></div><div><span><StatusDot tone={ready ? "green" : "amber"}/>Projection age</span><b>{snapshot ? `${Math.max(0, now - snapshot.generated_at_ms)}ms` : "UNAVAILABLE"}</b></div></div>
@@ -880,7 +929,7 @@ export default function Terminal() {
     {workspace === "MARKETS" && <div className="terminal-grid">{pIdentity}{pChart}{pBook}</div>}
     {workspace === "NEURAL" && <div className="ws-full">{pNeural}</div>}
     {workspace === "RISK" && <div className="ws-stack">{pRisk}{sTelemetry}</div>}
-    {workspace === "POSITIONS" && <div className="ws-flow">{pPositions}{pBook}</div>}
+    {workspace === "POSITIONS" && <div className="ws-flow">{pPositions}{pEngine}</div>}
     {workspace === "SETTLEMENT" && <div className="ws-flow">{pPositions}{pAudit}</div>}
     {workspace === "OPERATIONS" && <div className="ws-flow">{pHealth}{pAudit}</div>}
     {workspace === "AUDIT" && <div className="ws-full">{pAudit}</div>}
