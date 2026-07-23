@@ -319,14 +319,19 @@ function LiveChart({ points, target }: { points: string[]; target?: string }) {
   return <canvas className="live-canvas" ref={canvas} role="img" aria-label="Received reference-price history" />;
 }
 
+const WORKSPACES = ["MARKETS", "RISK", "POSITIONS", "SETTLEMENT", "OPERATIONS", "AUDIT", "SETTINGS"] as const;
+type Workspace = (typeof WORKSPACES)[number];
+
 export default function Terminal() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [error, setError] = useState("awaiting read-only projection gateway");
   const [selected, setSelected] = useState<AssetName>("BTC");
   const [paused, setPaused] = useState(false);
   const [localKill, setLocalKill] = useState(false);
-  const [workspace, setWorkspace] = useState("MARKETS");
+  const [workspace, setWorkspace] = useState<Workspace>("MARKETS");
   const [query, setQuery] = useState("");
+  const [commandOpen, setCommandOpen] = useState(false);
+  const commandRef = useRef<HTMLInputElement>(null);
   // Keep the server and first client render deterministic; the clock starts
   // after hydration so the terminal does not throw away its SSR tree.
   const [now, setNow] = useState(0);
@@ -549,14 +554,96 @@ export default function Terminal() {
   const paperState = paper === null ? "RECONCILING" : paper.active ? "RUNNING" : "IDLE";
   const paperStateDetail = paperStatusError || paperAuditError || paperMessage || (paper === null ? "awaiting paper-status authority" : "one-week evidence mode");
 
+  const commands = useMemo(() => {
+    const list: { label: string; hint: string; run: () => void }[] = [];
+    WORKSPACES.forEach((ws, index) => list.push({ label: `Go to ${ws}`, hint: `F${index + 1}`, run: () => setWorkspace(ws) }));
+    list.push({ label: "Select BTC", hint: "asset", run: () => { setSelected("BTC"); setWorkspace("MARKETS"); } });
+    list.push({ label: "Select ETH", hint: "asset", run: () => { setSelected("ETH"); setWorkspace("MARKETS"); } });
+    list.push({ label: paused ? "Resume client polling" : "Pause client polling", hint: "client", run: () => setPaused((v) => !v) });
+    list.push({ label: localKill ? "Release local NO_TRADE latch" : "Engage local NO_TRADE latch", hint: "safety", run: () => setLocalKill((v) => !v) });
+    list.push({ label: "Refresh research export", hint: "research", run: () => void refreshResearchExport() });
+    return list;
+  }, [paused, localKill]);
+  const commandResults = query.trim()
+    ? commands.filter((c) => c.label.toLowerCase().includes(query.trim().toLowerCase())).slice(0, 6)
+    : [];
+  const runCommand = (command: { run: () => void }) => { command.run(); setQuery(""); setCommandOpen(false); commandRef.current?.blur(); };
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault(); commandRef.current?.focus(); setCommandOpen(true); return;
+      }
+      if (event.key === "Escape") { setQuery(""); setCommandOpen(false); commandRef.current?.blur(); return; }
+      if ((event.target as HTMLElement | null)?.tagName === "INPUT") return;
+      const match = /^F([1-7])$/.exec(event.key);
+      if (match) { event.preventDefault(); setWorkspace(WORKSPACES[Number(match[1]) - 1]); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const pIdentity = (
+      <Panel code="01" title="MARKET IDENTITY" className="watch-panel" action={<span>{ready ? "2 VALIDATED" : "0 AUTHORIZED"}</span>}>
+        <div className="watch-head"><span>CONTRACT</span><span>REFERENCE</span><span>UP ASK</span></div>
+        {visibleAssets.map((item) => <button className={`watch-row ${selected === item.asset ? "selected" : ""}`} key={item.asset} onClick={() => setSelected(item.asset)}><span><b>{item.asset}</b><small>{new Date(item.start_time_ms).toISOString().slice(11,16)}–{new Date(item.end_time_ms).toISOString().slice(11,16)} UTC</small></span><span><strong>{decimal(item.reference_price_micros, 2)}</strong><small>PUBLIC REF</small></span><span><strong>{decimal(item.up_book.best_ask_micros)}</strong><small>CLOB</small></span></button>)}
+        {!ready && <div className="book-empty">NO COMPLETE CURRENT BTC/ETH PROJECTION<br/>{reason}</div>}
+        <div className="session-block"><div className="section-label">SESSION CLOCK</div><div className="countdown">{remainingText}<span>REMAINING</span></div><div className="session-line"><span>Open</span><b>{utcTime(asset?.start_time_ms).slice(0,8)}</b></div><div className="session-line"><span>Close</span><b>{utcTime(asset?.end_time_ms).slice(0,8)}</b></div><div className="session-line"><span>Condition</span><b>{short(asset?.condition_id)}</b></div><div className="session-line"><span>Rules hash</span><b>{short(asset?.rules_fingerprint)}</b></div></div>
+        <div className="compact-health"><div><StatusDot tone={ready ? "green" : "red"}/>MARKET IDENTITY</div><div><StatusDot tone={ready ? "green" : "red"}/>UP BOOK</div><div><StatusDot tone={ready ? "green" : "red"}/>DOWN BOOK</div><div><StatusDot tone={ready ? "green" : "red"}/>REFERENCE</div></div>
+      </Panel>
+  );
+  const pChart = (
+      <Panel code="02" title={`${asset?.symbol ?? selected} / REFERENCE`} className="chart-panel" action={asset && <a className="market-link" href={`https://polymarket.com/event/${asset.event_slug}`} target="_blank" rel="noreferrer">OPEN MARKET ↗</a>}>
+        <div className="quote-strip"><div><span>REFERENCE</span><strong>{decimal(asset?.reference_price_micros, 2)}</strong></div><div><span>HOUR TARGET</span><strong>{decimal(asset?.target_price_micros, 2)}</strong></div><div><span>UP BEST BID</span><strong>{decimal(asset?.up_book.best_bid_micros)}</strong></div><div><span>UP BEST ASK</span><strong>{decimal(asset?.up_book.best_ask_micros)}</strong></div><div><span>FEED AGE</span><strong>{asset ? `${asset.feed.age_ms}ms` : "UNAVAILABLE"}</strong></div></div>
+        <div className="chart"><LiveChart points={history[selected]} target={asset?.target_price_micros}/><div className="target-line"><span>VALIDATED HOURLY OPEN</span></div><div className="chart-x"><span>CLIENT HISTORY</span><span>RECEIVED VALUES ONLY</span><span>MAX 120 SAMPLES</span></div></div>
+        <div className="probability-band"><div className="prob-up" style={{ width: asset ? `${Number(BigInt(asset.up_book.best_ask_micros)) / 10_000}%` : "50%" }}><span>UP ASK</span><strong>{decimal(asset?.up_book.best_ask_micros)}</strong></div><div className="prob-down"><strong>{decimal(asset?.down_book.best_ask_micros)}</strong><span>DOWN ASK</span></div></div>
+      </Panel>
+  );
+  const pBook = (
+      <Panel code="03" title="COMPLEMENTARY BOOK" className="book-panel" action={<span>{asset ? `TICK ${decimal(asset.up_book.tick_size_micros)}` : "UNAVAILABLE"}</span>}>
+        <MiniBook side="UP" book={asset?.up_book}/><MiniBook side="DOWN" book={asset?.down_book}/>
+        <div className="pair-economics"><div><span>RAW BUY PAIR</span><b>{decimal(asset?.pair.buy_pair_cost_micros)}</b></div><div><span>RAW GAP TO 1</span><b>{signedDecimal(asset?.pair.raw_gap_micros)}</b></div><div><span>EXECUTABLE QTY</span><b>{quantity(asset?.pair.executable_quantity_micros)}</b></div><div className="decision"><span>OBSERVATION ONLY</span><b>NO_TRADE</b></div></div>
+      </Panel>
+  );
+  const pRisk = (
+      <Panel code="04" title="PAPER CAPITAL & RISK" className="risk-panel" action={<span className="badge-safe unavailable">SIMULATED ONLY</span>}>
+        <div className="risk-grid"><div className="capital-gauge"><div className="gauge-ring unavailable"><div><strong>{paper ? usd(capitalAssigned.toString(), 0) : "—"}</strong><span>PAPER ALLOCATION</span></div></div><div className="floor-label"><span>LIVE CAPITAL FLOOR</span><b>NOT CONNECTED</b></div></div><div className="risk-metrics"><div><span>Principal allocation</span><b>{usd(paper?.principal_micros)}</b></div><div><span>Backup reserve</span><b>{usd(paper?.backup_micros)}</b></div><div><span>Available paper cash</span><b>{usd(paper?.available_cash_micros)}</b></div><div><span>Open reservation</span><b>{usd(paper?.reserved_micros)}</b></div><div><span>Locked / realized P&amp;L</span><b>{signedUsd(paper?.locked_pnl_micros)} / {signedUsd(paper?.realized_pnl_micros)}</b></div></div><div className="gate-stack"><div><StatusDot tone={paper?.active ? "green" : "amber"}/>PAPER SESSION {paper?.active ? "RUNNING" : "IDLE"}</div><div><StatusDot tone={paper?.policy_status === "BOUND" ? "green" : "amber"}/>PAPER POLICY {paper?.policy_status ?? "UNCONFIGURED"}</div><div><StatusDot tone={replayHealthy ? "green" : "amber"}/>REPLAY INTEGRITY {replayHealthy ? "VERIFIED" : "PENDING"}</div><div><StatusDot tone={paper?.data_coverage_bps === 10_000 ? "green" : "amber"}/>DATA COVERAGE {paper ? `${(paper.data_coverage_bps / 100).toFixed(2)}%` : "UNAVAILABLE"}</div><div><StatusDot tone="blue"/>NO WALLET, SIGNER OR ORDER TRANSPORT</div><div className="no-trade">NO_TRADE<span>{paper?.policy_status === "BOUND" ? "SIMULATED PAIRS REQUIRE A FRESH EXECUTABLE COMPLETE-SET EDGE; THIS NEVER AUTHORIZES LIVE EXPOSURE." : "POLICY IS NOT BOUND; OBSERVATION ONLY."}</span></div></div></div>
+      </Panel>
+  );
+  const pPositions = (
+      <Panel code="05" title="SIMULATED PAIRS & SETTLEMENT" className="positions-panel" action={<span>{paper?.trades.length ?? 0} PAPER PAIRS</span>}>
+        <div className="table-head positions"><span>MARKET</span><span>QTY</span><span>COST</span><span>STATE</span><span>P&amp;L</span></div>{paper?.trades.length ? <div className="paper-position-table">{paper.trades.slice().reverse().slice(0, 4).map((trade) => <div className="paper-position-row" key={trade.trade_id}><strong>{trade.asset}</strong><span>{quantity(trade.quantity_micros)}</span><span>{usd(trade.cost_micros)}</span><span>{trade.state}</span><b>{signedUsd(trade.locked_pnl_micros)}</b></div>)}</div> : <div className="empty-position"><span>—</span><strong>NO SIMULATED PAIRS</strong><small>Conservative NO_TRADE decisions are recorded as evidence; no payout is assumed.</small></div>}<div className="settlement-row"><span><StatusDot tone="amber"/>PENDING PAYOUT {usd(pendingPayout.toString())}</span><span>COMMITTED {usd(pendingCost.toString())}</span><strong className="amber-text">NOT SPENDABLE</strong></div>
+      </Panel>
+  );
+  const pHealth = (
+      <Panel code="06" title="SYSTEM HEALTH" className="health-panel" action={<button className="text-button" onClick={() => setPaused((value) => !value)}>{paused ? "RESUME" : "PAUSE CLIENT"}</button>}>
+        <div className="health-list"><div><span><StatusDot tone={statusTone}/>Projection gateway</span><b>{mode.toUpperCase()}</b></div><div><span><StatusDot tone={ready ? "green" : "red"}/>Atomic assets</span><b>{ready ? "BTC + ETH" : "NONE"}</b></div><div><span><StatusDot tone={paper?.active ? "green" : "amber"}/>Paper recorder</span><b>{paper?.active ? `${paper.events_recorded} EVENTS` : "IDLE"}</b></div><div><span><StatusDot tone={replayHealthy ? "green" : "amber"}/>Journal replay</span><b>{replayHealthy ? "VERIFIED" : "PENDING"}</b></div><div><span><StatusDot tone="blue"/>Credentials / transport</span><b>ABSENT</b></div><div><span><StatusDot tone={snapshot?.no_trade ? "green" : "red"}/>NO_TRADE contract</span><b>{snapshot?.no_trade ? "ENFORCED" : "CLIENT FAIL-CLOSED"}</b></div><div><span><StatusDot tone={ready ? "green" : "amber"}/>Projection age</span><b>{snapshot ? `${Math.max(0, now - snapshot.generated_at_ms)}ms` : "UNAVAILABLE"}</b></div></div>
+      </Panel>
+  );
+  const pAudit = (
+      <Panel code="07" title="PROJECTION AUDIT TAPE" className="audit-panel" action={<span>SEQ {snapshot?.sequence ?? "—"}</span>}>
+        <div className="audit-tape">{audit.map(([time, kind, message]) => <div key={kind}><time>{time}</time><b className={kind === "PROJECTION" ? "amber-text" : "positive"}>{kind}</b><span>{message}</span><em>public</em></div>)}<div><time>{utcTime(now)}</time><b className="negative">AUTHORITY</b><span>Credentials, signing, accounting and orders absent</span><em>boundary</em></div></div>
+      </Panel>
+  );
+  const sTelemetry = (
+    <section className="paper-section" aria-label="Paper campaign telemetry">
+      <div className="paper-section-head"><div><span className="panel-code">P1</span><h2>CAMPAIGN TELEMETRY / TRADES</h2></div><span>{paper?.session_id ?? "NO SESSION"} · {paper?.events_recorded ?? 0} EVENTS</span></div>
+      <div className="paper-section-grid">
+        <div className="paper-neural"><div className="section-label">DECISION / EVIDENCE FIELD <span>TELEMETRY ONLY</span></div><PaperNeuralField status={paper}/><div className="paper-metrics"><span>AVAILABLE CASH <b>{usd(paper?.available_cash_micros)}</b></span><span>UNREALIZED <b>{signedUsd(paper?.unrealized_pnl_micros)}</b></span><span>MAX DRAWDOWN <b>{usd(paper?.max_drawdown_micros)}</b></span><span>CVaR <b>{usd(paper?.cvar_micros)}</b></span><span>HEDGE FAILURES <b>{paper?.hedge_failures ?? "—"}</b></span><span>FILL RATE <b>{paper ? `${(paper.fill_rate_bps / 100).toFixed(2)}%` : "—"}</b></span><span>DATA COVERAGE <b>{paper ? `${(paper.data_coverage_bps / 100).toFixed(2)}%` : "—"}</b></span><span>CHECKPOINTS <b>{paper?.checkpoints ?? "—"}</b></span></div></div>
+        <div className="paper-contracts"><div className="section-label">CONTRACT ACTIVITY <span>SEPARATE STREAMS</span></div>{paper?.contracts.length ? paper.contracts.map((contract) => <div className="contract-row" key={contract.asset}><strong>{contract.asset}</strong><span>{contract.last_decision}</span><span>{contract.observations} OBS</span><b>{signedDecimal(contract.realized_pnl_micros)}</b></div>) : <div className="paper-empty">START A PAPER SESSION TO RECORD BTC + ETH</div>}</div>
+        <div className="paper-trades"><div className="section-label">SIMULATED TRADES <span>{paper?.trades.length ?? 0} RECENT</span></div>{paper?.trades.length ? <div className="trade-table">{paper.trades.slice().reverse().slice(0, 12).map((trade) => <div className="trade-row" key={trade.trade_id}><b>{trade.asset}</b><span>{trade.state}</span><span>{quantity(trade.quantity_micros)} pair</span><span>{decimal(trade.cost_micros)}</span><strong>{signedDecimal(trade.locked_pnl_micros)}</strong></div>)}</div> : <div className="paper-empty">NO FILLS — CONSERVATIVE NO_TRADE IS VALID</div>}</div>
+      </div>
+    </section>
+  );
+
   return <main className={localKill ? "terminal kill-active" : "terminal"}>
     <header className="topbar">
       <div className="brand-block"><div className="brand-mark">PT</div><div><strong>POLY//TERMINAL</strong><span>READ-ONLY MARKET CONTROL</span></div></div>
-      <div className="command-wrap"><span className="command-key">CMD</span><input aria-label="Terminal command" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search display…"/><kbd>⌘ K</kbd></div>
+      <div className="command-wrap"><span className="command-key">CMD</span><input ref={commandRef} aria-label="Terminal command" value={query} onChange={(event) => { setQuery(event.target.value); setCommandOpen(true); }} onFocus={() => setCommandOpen(true)} onBlur={() => window.setTimeout(() => setCommandOpen(false), 120)} onKeyDown={(event) => { if (event.key === "Enter" && commandResults[0]) { event.preventDefault(); runCommand(commandResults[0]); } }} placeholder="Search display… (⌘K)"/><kbd>⌘ K</kbd>{commandOpen && commandResults.length > 0 && <ul className="command-menu">{commandResults.map((command) => <li key={command.label}><button onMouseDown={(event) => { event.preventDefault(); runCommand(command); }}><span>{command.label}</span><kbd>{command.hint}</kbd></button></li>)}</ul>}</div>
       <div className="top-status"><div><span>UTC</span><strong>{utcTime(now)}</strong></div><div><span>MODE</span><strong className="amber-text">PUBLIC / READ ONLY</strong></div><button className={localKill ? "kill-button active" : "kill-button"} onClick={() => setLocalKill((value) => !value)}>{localKill ? "LOCAL LATCHED" : "LOCAL NO_TRADE"}</button></div>
     </header>
     <nav className="function-bar" aria-label="Terminal workspaces">
-      {["MARKETS", "RISK", "POSITIONS", "SETTLEMENT", "OPERATIONS", "AUDIT", "SETTINGS"].map((item, index) => <button key={item} className={workspace === item ? "active" : ""} onClick={() => setWorkspace(item)}><span>F{index + 1}</span>{item}</button>)}
+      {WORKSPACES.map((item, index) => <button key={item} className={workspace === item ? "active" : ""} onClick={() => setWorkspace(item)}><span>F{index + 1}</span>{item}</button>)}
       <div className="function-spacer"/><span className="connection"><StatusDot tone={statusTone}/>{paused ? "CLIENT PAUSED" : `${mode.toUpperCase()} · PUBLIC FEED`}</span>
     </nav>
     {(!ready || localKill || noTrade) && <div className={`kill-banner ${mode === "halted" ? "halted" : ""}`}><strong>GLOBAL NO_TRADE</strong><span>{reason}</span></div>}
@@ -592,50 +679,12 @@ export default function Terminal() {
       </div>
     </section>}
 
-    <div className="terminal-grid">
-      <Panel code="01" title="MARKET IDENTITY" className="watch-panel" action={<span>{ready ? "2 VALIDATED" : "0 AUTHORIZED"}</span>}>
-        <div className="watch-head"><span>CONTRACT</span><span>REFERENCE</span><span>UP ASK</span></div>
-        {visibleAssets.map((item) => <button className={`watch-row ${selected === item.asset ? "selected" : ""}`} key={item.asset} onClick={() => setSelected(item.asset)}><span><b>{item.asset}</b><small>{new Date(item.start_time_ms).toISOString().slice(11,16)}–{new Date(item.end_time_ms).toISOString().slice(11,16)} UTC</small></span><span><strong>{decimal(item.reference_price_micros, 2)}</strong><small>PUBLIC REF</small></span><span><strong>{decimal(item.up_book.best_ask_micros)}</strong><small>CLOB</small></span></button>)}
-        {!ready && <div className="book-empty">NO COMPLETE CURRENT BTC/ETH PROJECTION<br/>{reason}</div>}
-        <div className="session-block"><div className="section-label">SESSION CLOCK</div><div className="countdown">{remainingText}<span>REMAINING</span></div><div className="session-line"><span>Open</span><b>{utcTime(asset?.start_time_ms).slice(0,8)}</b></div><div className="session-line"><span>Close</span><b>{utcTime(asset?.end_time_ms).slice(0,8)}</b></div><div className="session-line"><span>Condition</span><b>{short(asset?.condition_id)}</b></div><div className="session-line"><span>Rules hash</span><b>{short(asset?.rules_fingerprint)}</b></div></div>
-        <div className="compact-health"><div><StatusDot tone={ready ? "green" : "red"}/>MARKET IDENTITY</div><div><StatusDot tone={ready ? "green" : "red"}/>UP BOOK</div><div><StatusDot tone={ready ? "green" : "red"}/>DOWN BOOK</div><div><StatusDot tone={ready ? "green" : "red"}/>REFERENCE</div></div>
-      </Panel>
-
-      <Panel code="02" title={`${asset?.symbol ?? selected} / REFERENCE`} className="chart-panel" action={asset && <a className="market-link" href={`https://polymarket.com/event/${asset.event_slug}`} target="_blank" rel="noreferrer">OPEN MARKET ↗</a>}>
-        <div className="quote-strip"><div><span>REFERENCE</span><strong>{decimal(asset?.reference_price_micros, 2)}</strong></div><div><span>HOUR TARGET</span><strong>{decimal(asset?.target_price_micros, 2)}</strong></div><div><span>UP BEST BID</span><strong>{decimal(asset?.up_book.best_bid_micros)}</strong></div><div><span>UP BEST ASK</span><strong>{decimal(asset?.up_book.best_ask_micros)}</strong></div><div><span>FEED AGE</span><strong>{asset ? `${asset.feed.age_ms}ms` : "UNAVAILABLE"}</strong></div></div>
-        <div className="chart"><LiveChart points={history[selected]} target={asset?.target_price_micros}/><div className="target-line"><span>VALIDATED HOURLY OPEN</span></div><div className="chart-x"><span>CLIENT HISTORY</span><span>RECEIVED VALUES ONLY</span><span>MAX 120 SAMPLES</span></div></div>
-        <div className="probability-band"><div className="prob-up" style={{ width: asset ? `${Number(BigInt(asset.up_book.best_ask_micros)) / 10_000}%` : "50%" }}><span>UP ASK</span><strong>{decimal(asset?.up_book.best_ask_micros)}</strong></div><div className="prob-down"><strong>{decimal(asset?.down_book.best_ask_micros)}</strong><span>DOWN ASK</span></div></div>
-      </Panel>
-
-      <Panel code="03" title="COMPLEMENTARY BOOK" className="book-panel" action={<span>{asset ? `TICK ${decimal(asset.up_book.tick_size_micros)}` : "UNAVAILABLE"}</span>}>
-        <MiniBook side="UP" book={asset?.up_book}/><MiniBook side="DOWN" book={asset?.down_book}/>
-        <div className="pair-economics"><div><span>RAW BUY PAIR</span><b>{decimal(asset?.pair.buy_pair_cost_micros)}</b></div><div><span>RAW GAP TO 1</span><b>{signedDecimal(asset?.pair.raw_gap_micros)}</b></div><div><span>EXECUTABLE QTY</span><b>{quantity(asset?.pair.executable_quantity_micros)}</b></div><div className="decision"><span>OBSERVATION ONLY</span><b>NO_TRADE</b></div></div>
-      </Panel>
-
-      <Panel code="04" title="PAPER CAPITAL & RISK" className="risk-panel" action={<span className="badge-safe unavailable">SIMULATED ONLY</span>}>
-        <div className="risk-grid"><div className="capital-gauge"><div className="gauge-ring unavailable"><div><strong>{paper ? usd(capitalAssigned.toString(), 0) : "—"}</strong><span>PAPER ALLOCATION</span></div></div><div className="floor-label"><span>LIVE CAPITAL FLOOR</span><b>NOT CONNECTED</b></div></div><div className="risk-metrics"><div><span>Principal allocation</span><b>{usd(paper?.principal_micros)}</b></div><div><span>Backup reserve</span><b>{usd(paper?.backup_micros)}</b></div><div><span>Available paper cash</span><b>{usd(paper?.available_cash_micros)}</b></div><div><span>Open reservation</span><b>{usd(paper?.reserved_micros)}</b></div><div><span>Locked / realized P&amp;L</span><b>{signedUsd(paper?.locked_pnl_micros)} / {signedUsd(paper?.realized_pnl_micros)}</b></div></div><div className="gate-stack"><div><StatusDot tone={paper?.active ? "green" : "amber"}/>PAPER SESSION {paper?.active ? "RUNNING" : "IDLE"}</div><div><StatusDot tone={paper?.policy_status === "BOUND" ? "green" : "amber"}/>PAPER POLICY {paper?.policy_status ?? "UNCONFIGURED"}</div><div><StatusDot tone={replayHealthy ? "green" : "amber"}/>REPLAY INTEGRITY {replayHealthy ? "VERIFIED" : "PENDING"}</div><div><StatusDot tone={paper?.data_coverage_bps === 10_000 ? "green" : "amber"}/>DATA COVERAGE {paper ? `${(paper.data_coverage_bps / 100).toFixed(2)}%` : "UNAVAILABLE"}</div><div><StatusDot tone="blue"/>NO WALLET, SIGNER OR ORDER TRANSPORT</div><div className="no-trade">NO_TRADE<span>{paper?.policy_status === "BOUND" ? "SIMULATED PAIRS REQUIRE A FRESH EXECUTABLE COMPLETE-SET EDGE; THIS NEVER AUTHORIZES LIVE EXPOSURE." : "POLICY IS NOT BOUND; OBSERVATION ONLY."}</span></div></div></div>
-      </Panel>
-
-      <Panel code="05" title="SIMULATED PAIRS & SETTLEMENT" className="positions-panel" action={<span>{paper?.trades.length ?? 0} PAPER PAIRS</span>}>
-        <div className="table-head positions"><span>MARKET</span><span>QTY</span><span>COST</span><span>STATE</span><span>P&amp;L</span></div>{paper?.trades.length ? <div className="paper-position-table">{paper.trades.slice().reverse().slice(0, 4).map((trade) => <div className="paper-position-row" key={trade.trade_id}><strong>{trade.asset}</strong><span>{quantity(trade.quantity_micros)}</span><span>{usd(trade.cost_micros)}</span><span>{trade.state}</span><b>{signedUsd(trade.locked_pnl_micros)}</b></div>)}</div> : <div className="empty-position"><span>—</span><strong>NO SIMULATED PAIRS</strong><small>Conservative NO_TRADE decisions are recorded as evidence; no payout is assumed.</small></div>}<div className="settlement-row"><span><StatusDot tone="amber"/>PENDING PAYOUT {usd(pendingPayout.toString())}</span><span>COMMITTED {usd(pendingCost.toString())}</span><strong className="amber-text">NOT SPENDABLE</strong></div>
-      </Panel>
-
-      <Panel code="06" title="SYSTEM HEALTH" className="health-panel" action={<button className="text-button" onClick={() => setPaused((value) => !value)}>{paused ? "RESUME" : "PAUSE CLIENT"}</button>}>
-        <div className="health-list"><div><span><StatusDot tone={statusTone}/>Projection gateway</span><b>{mode.toUpperCase()}</b></div><div><span><StatusDot tone={ready ? "green" : "red"}/>Atomic assets</span><b>{ready ? "BTC + ETH" : "NONE"}</b></div><div><span><StatusDot tone={paper?.active ? "green" : "amber"}/>Paper recorder</span><b>{paper?.active ? `${paper.events_recorded} EVENTS` : "IDLE"}</b></div><div><span><StatusDot tone={replayHealthy ? "green" : "amber"}/>Journal replay</span><b>{replayHealthy ? "VERIFIED" : "PENDING"}</b></div><div><span><StatusDot tone="blue"/>Credentials / transport</span><b>ABSENT</b></div><div><span><StatusDot tone={snapshot?.no_trade ? "green" : "red"}/>NO_TRADE contract</span><b>{snapshot?.no_trade ? "ENFORCED" : "CLIENT FAIL-CLOSED"}</b></div><div><span><StatusDot tone={ready ? "green" : "amber"}/>Projection age</span><b>{snapshot ? `${Math.max(0, now - snapshot.generated_at_ms)}ms` : "UNAVAILABLE"}</b></div></div>
-      </Panel>
-
-      <Panel code="07" title="PROJECTION AUDIT TAPE" className="audit-panel" action={<span>SEQ {snapshot?.sequence ?? "—"}</span>}>
-        <div className="audit-tape">{audit.map(([time, kind, message]) => <div key={kind}><time>{time}</time><b className={kind === "PROJECTION" ? "amber-text" : "positive"}>{kind}</b><span>{message}</span><em>public</em></div>)}<div><time>{utcTime(now)}</time><b className="negative">AUTHORITY</b><span>Credentials, signing, accounting and orders absent</span><em>boundary</em></div></div>
-      </Panel>
-    </div>
-    <section className="paper-section" aria-label="Paper campaign telemetry">
-      <div className="paper-section-head"><div><span className="panel-code">P1</span><h2>CAMPAIGN TELEMETRY / TRADES</h2></div><span>{paper?.session_id ?? "NO SESSION"} · {paper?.events_recorded ?? 0} EVENTS</span></div>
-      <div className="paper-section-grid">
-        <div className="paper-neural"><div className="section-label">DECISION / EVIDENCE FIELD <span>TELEMETRY ONLY</span></div><PaperNeuralField status={paper}/><div className="paper-metrics"><span>AVAILABLE CASH <b>{usd(paper?.available_cash_micros)}</b></span><span>UNREALIZED <b>{signedUsd(paper?.unrealized_pnl_micros)}</b></span><span>MAX DRAWDOWN <b>{usd(paper?.max_drawdown_micros)}</b></span><span>CVaR <b>{usd(paper?.cvar_micros)}</b></span><span>HEDGE FAILURES <b>{paper?.hedge_failures ?? "—"}</b></span><span>FILL RATE <b>{paper ? `${(paper.fill_rate_bps / 100).toFixed(2)}%` : "—"}</b></span><span>DATA COVERAGE <b>{paper ? `${(paper.data_coverage_bps / 100).toFixed(2)}%` : "—"}</b></span><span>CHECKPOINTS <b>{paper?.checkpoints ?? "—"}</b></span></div></div>
-        <div className="paper-contracts"><div className="section-label">CONTRACT ACTIVITY <span>SEPARATE STREAMS</span></div>{paper?.contracts.length ? paper.contracts.map((contract) => <div className="contract-row" key={contract.asset}><strong>{contract.asset}</strong><span>{contract.last_decision}</span><span>{contract.observations} OBS</span><b>{signedDecimal(contract.realized_pnl_micros)}</b></div>) : <div className="paper-empty">START A PAPER SESSION TO RECORD BTC + ETH</div>}</div>
-        <div className="paper-trades"><div className="section-label">SIMULATED TRADES <span>{paper?.trades.length ?? 0} RECENT</span></div>{paper?.trades.length ? <div className="trade-table">{paper.trades.slice().reverse().slice(0, 12).map((trade) => <div className="trade-row" key={trade.trade_id}><b>{trade.asset}</b><span>{trade.state}</span><span>{quantity(trade.quantity_micros)} pair</span><span>{decimal(trade.cost_micros)}</span><strong>{signedDecimal(trade.locked_pnl_micros)}</strong></div>)}</div> : <div className="paper-empty">NO FILLS — CONSERVATIVE NO_TRADE IS VALID</div>}</div>
-      </div>
-    </section>
+    {workspace === "MARKETS" && <div className="terminal-grid">{pIdentity}{pChart}{pBook}</div>}
+    {workspace === "RISK" && <div className="ws-stack">{pRisk}{sTelemetry}</div>}
+    {workspace === "POSITIONS" && <div className="ws-flow">{pPositions}{pBook}</div>}
+    {workspace === "SETTLEMENT" && <div className="ws-flow">{pPositions}{pAudit}</div>}
+    {workspace === "OPERATIONS" && <div className="ws-flow">{pHealth}{pAudit}</div>}
+    {workspace === "AUDIT" && <div className="ws-full">{pAudit}</div>}
     <footer className="statusbar"><span><kbd>F1</kbd> Markets</span><span><kbd>F2</kbd> Risk</span><span><kbd>⌘K</kbd> Display search</span><div/><strong>NO EXTERNAL ORDERS</strong><span>Digest {short(snapshot?.snapshot_digest)}</span><span>Projection v1</span></footer>
   </main>;
 }

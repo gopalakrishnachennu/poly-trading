@@ -45,8 +45,9 @@ test("server render fails closed before the public gateway is available", async 
   assert.match(html, /Poly Terminal — Event Markets Control/);
   assert.match(html, /GLOBAL NO_TRADE/);
   assert.match(html, /awaiting read-only projection gateway/);
-  assert.match(html, /NO SIMULATED PAIRS/);
-  assert.match(html, /Available paper cash<\/span><b>UNAVAILABLE/);
+  // Default MARKETS workspace must render fail-closed: no market identity and no book.
+  assert.match(html, /NO COMPLETE CURRENT BTC\/ETH PROJECTION/);
+  assert.match(html, /AUTHORITATIVE BOOK UNAVAILABLE/);
   assert.match(html, /NO EXTERNAL ORDERS/);
   assert.doesNotMatch(html, /SIMULATED FEED|DEMO PROJECTION|\$10,000\.00|\$9,800\.00/);
 });
