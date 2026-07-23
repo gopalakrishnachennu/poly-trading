@@ -22,3 +22,6 @@ formal/states/
 *.log
 var/
 .DS_Store
+
+# Locally downloaded TLC jar (make tla)
+formal/.tla2tools.jar

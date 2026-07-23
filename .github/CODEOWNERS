@@ -1,0 +1,8 @@
+# Default owner for everything in the repository.
+* @gopalakrishnachennu
+
+# Financial-critical and safety-critical areas warrant extra care on review.
+/crates/ @gopalakrishnachennu
+/formal/ @gopalakrishnachennu
+/docs/ @gopalakrishnachennu
+/.github/ @gopalakrishnachennu
