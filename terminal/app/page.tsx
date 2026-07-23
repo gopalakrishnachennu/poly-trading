@@ -204,6 +204,13 @@ function short(value?: string | null): string {
   return value && value.length > 13 ? `${value.slice(0, 7)}…${value.slice(-5)}` : value || "UNAVAILABLE";
 }
 
+function bytes(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const index = Math.min(units.length - 1, Math.floor(Math.log(value) / Math.log(1024)));
+  return `${(value / 1024 ** index).toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
+}
+
 function utcTime(ms?: number): string {
   return typeof ms === "number" ? new Date(ms).toISOString().slice(11, 23) : "--:--:--.---";
 }
@@ -487,7 +494,11 @@ type LiveOpen = { asset: string; market: string; side: string; price: number; st
 type LiveBook = { strategy: string; principal: number; bankroll: number; pnl: number; settled: number; wins: number; open_positions: LiveOpen[]; bets: LiveBet[] };
 type LiveReport = { generated_at_ms: number; started_at_ms: number; books: LiveBook[] };
 
-const WORKSPACES = ["MARKETS", "NEURAL", "RISK", "POSITIONS", "SETTLEMENT", "OPERATIONS", "AUDIT", "SETTINGS"] as const;
+type DataSet = { key: string; label: string; path: string; what: string; files: number; bytes: number; newest_ms: number | null };
+type DataSummary = { generated_at_ms: number; files_scanned: number; markets_total: number; markets_usable: number; min_span_min: number; target_min: number; target_good: number; by_asset: Record<string, number>; by_day: Record<string, number>; first_market_ms: number | null; last_market_ms: number | null };
+type DataReport = { generated_at_ms: number; datasets: DataSet[]; summary: DataSummary | null; summary_hint: string };
+
+const WORKSPACES = ["MARKETS", "NEURAL", "RISK", "POSITIONS", "SETTLEMENT", "DATA", "OPERATIONS", "AUDIT", "SETTINGS"] as const;
 type Workspace = (typeof WORKSPACES)[number];
 
 export default function Terminal() {
@@ -505,6 +516,7 @@ export default function Terminal() {
   const [livePaper, setLivePaper] = useState<LiveReport | null>(null);
   const [livePaperReason, setLivePaperReason] = useState("loading live paper trader");
   const [liveBook, setLiveBook] = useState(0);
+  const [dataReport, setDataReport] = useState<DataReport | null>(null);
   const commandRef = useRef<HTMLInputElement>(null);
   // Keep the server and first client render deterministic; the clock starts
   // after hydration so the terminal does not throw away its SSR tree.
@@ -767,6 +779,21 @@ export default function Terminal() {
     return () => { disposed = true; window.clearInterval(timer); };
   }, []);
 
+  // Saved-data inventory (cheap disk scan + precomputed readiness summary).
+  useEffect(() => {
+    let disposed = false;
+    const read = async () => {
+      try {
+        const response = await fetch("/api/data", { cache: "no-store" });
+        const payload = await response.json() as DataReport;
+        if (!disposed) setDataReport(payload);
+      } catch { /* keep the last inventory on a transient failure */ }
+    };
+    void read();
+    const timer = window.setInterval(read, 20_000);
+    return () => { disposed = true; window.clearInterval(timer); };
+  }, []);
+
   // Live directional paper trader (simulated positions against the live tape).
   useEffect(() => {
     let disposed = false;
@@ -806,7 +833,7 @@ export default function Terminal() {
       }
       if (event.key === "Escape") { setQuery(""); setCommandOpen(false); commandRef.current?.blur(); return; }
       if ((event.target as HTMLElement | null)?.tagName === "INPUT") return;
-      const match = /^F([1-8])$/.exec(event.key);
+      const match = /^F([1-9])$/.exec(event.key);
       if (match) { event.preventDefault(); setWorkspace(WORKSPACES[Number(match[1]) - 1]); }
     };
     window.addEventListener("keydown", onKey);
@@ -859,6 +886,48 @@ export default function Terminal() {
   const pPositions = (
       <Panel code="05" title="SIMULATED PAIRS & SETTLEMENT" className="positions-panel" action={<span>{paper?.trades.length ?? 0} PAPER PAIRS</span>}>
         <div className="table-head positions"><span>MARKET</span><span>QTY</span><span>COST</span><span>STATE</span><span>P&amp;L</span></div>{paper?.trades.length ? <div className="paper-position-table">{paper.trades.slice().reverse().slice(0, 4).map((trade) => <div className="paper-position-row" key={trade.trade_id}><strong>{trade.asset}</strong><span>{quantity(trade.quantity_micros)}</span><span>{usd(trade.cost_micros)}</span><span>{trade.state}</span><b>{signedUsd(trade.locked_pnl_micros)}</b></div>)}</div> : <div className="empty-position"><span>—</span><strong>NO SIMULATED PAIRS</strong><small>Conservative NO_TRADE decisions are recorded as evidence; no payout is assumed.</small></div>}<div className="settlement-row"><span><StatusDot tone="amber"/>PENDING PAYOUT {usd(pendingPayout.toString())}</span><span>COMMITTED {usd(pendingCost.toString())}</span><strong className="amber-text">NOT SPENDABLE</strong></div>
+      </Panel>
+  );
+  const summary = dataReport?.summary ?? null;
+  const readiness = summary ? Math.min(100, 100 * summary.markets_usable / summary.target_good) : 0;
+  const pData = (
+      <Panel code="D1" title="SAVED DATA / STORAGE INVENTORY" className="engine-panel"
+             action={<span className="badge-safe unavailable">READ ONLY</span>}>
+        <div className="engine-body">
+          <div className="engine-meta">
+            <span>{dataReport ? `${dataReport.datasets.reduce((n, d) => n + d.files, 0)} FILES · ${bytes(dataReport.datasets.reduce((n, d) => n + d.bytes, 0))} ON DISK` : "SCANNING…"}</span>
+            <span>{dataReport ? utcTime(dataReport.generated_at_ms).slice(0, 8) : ""}</span>
+          </div>
+          <div className="data-readiness">
+            <div className="section-label">BACKTEST READINESS <span>{summary ? `${summary.markets_usable} / ${summary.target_good} RESOLVED MARKETS` : "RUN make data-summary"}</span></div>
+            <div className="data-bar"><i style={{ width: `${readiness}%` }} className={summary && summary.markets_usable >= summary.target_min ? "ok" : "low"} /></div>
+            <div className="data-readiness-note">
+              {summary ? (summary.markets_usable < summary.target_min
+                ? `Below the ~${summary.target_min} minimum for any trustworthy signal — keep capturing.`
+                : summary.markets_usable < summary.target_good
+                  ? `Enough for a first look; ~${summary.target_good} gives a firmer read.`
+                  : "Enough markets to judge a strategy with meaningful power.")
+                : dataReport?.summary_hint}
+            </div>
+            {summary && <div className="data-facets">
+              <div><span>BY ASSET</span><b>{Object.entries(summary.by_asset).map(([a, n]) => `${a} ${n}`).join(" · ") || "—"}</b></div>
+              <div><span>DAYS COVERED</span><b>{Object.keys(summary.by_day).length}</b></div>
+              <div><span>MARKETS SEEN</span><b>{summary.markets_total}</b></div>
+              <div><span>SUMMARY AGE</span><b>{utcTime(summary.generated_at_ms).slice(0, 8)}</b></div>
+            </div>}
+          </div>
+          <div className="table-head data"><span>DATASET</span><span>WHAT IT HOLDS</span><span>FILES</span><span>SIZE</span><span>UPDATED</span></div>
+          <div className="engine-trades">
+            {dataReport ? dataReport.datasets.map((d) => <div className="data-row" key={d.key}>
+              <span><b>{d.label}</b><em>{d.path}</em></span>
+              <span className="data-what">{d.what}</span>
+              <span>{d.files || "—"}</span>
+              <span>{d.files ? bytes(d.bytes) : "—"}</span>
+              <span>{d.newest_ms ? utcTime(d.newest_ms).slice(0, 8) : "—"}</span>
+            </div>) : <div className="paper-empty">SCANNING LOCAL STORAGE…</div>}
+          </div>
+          <div className="engine-note"><strong>LOCAL ONLY</strong><span>Everything listed lives on this machine under var/ and is Git-ignored. Nothing is uploaded, and no dataset carries credential, wallet or order authority. Refresh the readiness summary with make data-summary.</span></div>
+        </div>
       </Panel>
   );
   const book = livePaper?.books[Math.min(liveBook, (livePaper.books.length || 1) - 1)];
@@ -990,6 +1059,7 @@ export default function Terminal() {
     {workspace === "RISK" && <div className="ws-stack">{pRisk}{sTelemetry}</div>}
     {workspace === "POSITIONS" && <div className="ws-flow">{pLive}{pEngine}</div>}
     {workspace === "SETTLEMENT" && <div className="ws-flow">{pPositions}{pAudit}</div>}
+    {workspace === "DATA" && <div className="ws-full">{pData}</div>}
     {workspace === "OPERATIONS" && <div className="ws-flow">{pHealth}{pAudit}</div>}
     {workspace === "AUDIT" && <div className="ws-full">{pAudit}</div>}
     <footer className="statusbar"><span><kbd>F1</kbd> Markets</span><span><kbd>F2</kbd> Neural</span><span><kbd>F3</kbd> Risk</span><span><kbd>⌘K</kbd> Display search</span><div/><strong>NO EXTERNAL ORDERS</strong><span>Digest {short(snapshot?.snapshot_digest)}</span><span>Projection v1</span></footer>

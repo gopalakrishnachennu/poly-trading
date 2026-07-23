@@ -35,6 +35,7 @@ def main() -> None:
                          "Default: paper-campaign + research-capture.")
     ap.add_argument("--min-span", type=float, default=20.0,
                     help="minutes a market must be observed to count as resolved")
+    ap.add_argument("--json", help="also write a machine-readable summary to this path")
     args = ap.parse_args()
 
     patterns = args.glob or [
@@ -99,6 +100,25 @@ def main() -> None:
         print(f"  Enough for a first look; keep going toward ~{TARGET_GOOD} for a firmer read.")
     else:
         print("  Enough to backtest with meaningful power. Run scripts/backtest_fair_value.py.")
+
+    if args.json:
+        import time
+        spans = [m["tmin"] for m in markets.values() if m["tmin"]]
+        with open(args.json, "w") as f:
+            json.dump({
+                "generated_at_ms": int(time.time() * 1000),
+                "files_scanned": len(paths),
+                "markets_total": total,
+                "markets_usable": usable,
+                "min_span_min": args.min_span,
+                "target_min": TARGET_MIN,
+                "target_good": TARGET_GOOD,
+                "by_asset": dict(sorted(per_asset.items())),
+                "by_day": dict(sorted(per_day.items())),
+                "first_market_ms": min(spans) if spans else None,
+                "last_market_ms": max(spans) if spans else None,
+            }, f, indent=1)
+        print(f"\nWrote machine-readable summary to {args.json}")
 
 
 if __name__ == "__main__":

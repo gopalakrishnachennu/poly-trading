@@ -9,7 +9,7 @@ TLA_URL     := https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2t
 TLA_SHA     := cc4803dce2a8ffaf0f5920a9dc39df4b5ee34ab4cb53fb58ac557277a7e516b3
 
 .PHONY: help verify ci fmt fmt-fix clippy test deny terminal terminal-install \
-        tla capture progress backtest analyze clean
+        tla capture progress backtest analyze clean engine-report live-paper data-summary
 
 help: ## Show this help
 	@echo "Targets:"
@@ -81,3 +81,6 @@ live-paper: ## Run the live directional paper trader (simulated money, no orders
 clean: ## Remove Rust build artifacts and the downloaded TLC jar
 	cargo clean
 	rm -f $(TLA_JAR)
+
+data-summary: ## Refresh the DATA tab readiness summary
+	python3 scripts/capture_progress.py --json var/data-summary.json
