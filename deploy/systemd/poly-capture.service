@@ -1,0 +1,39 @@
+# Read-only market capture as a boot-persistent service.
+#
+# Runs scripts/run-continuous-capture.sh (the credentialless gateway + the
+# compact snapshot recorder). Survives reboots and auto-restarts on crash.
+# This service holds NO credential, signer, wallet, or order path.
+#
+# Install (see deploy/SELF_HOSTING.md for full steps):
+#   sudo cp deploy/systemd/poly-capture.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now poly-capture
+#   journalctl -u poly-capture -f
+
+[Unit]
+Description=Poly Trading read-only market capture (gateway + snapshot recorder)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust User and paths to match your host.
+User=poly
+WorkingDirectory=/opt/poly-trading
+Environment=POLY_CAPTURE_INTERVAL=15
+# First start compiles the gateway (cached afterwards); allow time.
+TimeoutStartSec=1200
+ExecStart=/bin/sh /opt/poly-trading/scripts/run-continuous-capture.sh
+Restart=always
+RestartSec=10
+
+# Hardening — this is read-only public capture, so lock the process down.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+# The repo (and its var/ output) lives here and must stay writable.
+ReadWritePaths=/opt/poly-trading
+
+[Install]
+WantedBy=multi-user.target

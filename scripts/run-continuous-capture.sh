@@ -70,15 +70,21 @@ supervise() {
   done
 }
 
-# 1) Gateway: reuse an already-healthy one, else supervise our own.
+# 1) Gateway: reuse an already-healthy one, else supervise our own. Prefer a
+# prebuilt binary (release, then debug) so this works under systemd without
+# cargo on PATH; fall back to `cargo run --release` on dev hosts.
+release_bin="$project_root/target/release/terminal-projection"
+debug_bin="$project_root/target/debug/terminal-projection"
 if gateway_healthy; then
   echo "reusing healthy gateway on http://127.0.0.1:8088" >&2
+elif [ -x "$release_bin" ]; then
+  supervise gateway "$log_dir/gateway.log" "$release_bin" &
+elif [ -x "$debug_bin" ]; then
+  supervise gateway "$log_dir/gateway.log" "$debug_bin" &
 elif command -v cargo >/dev/null 2>&1; then
-  supervise gateway "$log_dir/gateway.log" cargo run --locked -p terminal-projection &
-elif [ -x "$project_root/target/debug/terminal-projection" ]; then
-  supervise gateway "$log_dir/gateway.log" "$project_root/target/debug/terminal-projection" &
+  supervise gateway "$log_dir/gateway.log" cargo run --release --locked -p terminal-projection &
 else
-  echo "need cargo or target/debug/terminal-projection to run the gateway" >&2
+  echo "need target/release/terminal-projection or cargo to run the gateway" >&2
   exit 1
 fi
 
