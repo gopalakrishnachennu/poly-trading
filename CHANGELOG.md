@@ -21,6 +21,10 @@ rather than released package versions.
   `capture_progress.py`.
 
 ### Changed
+- Dependencies: bumped `arrow`/`parquet` 56→59, `tower-http` 0.6→0.7,
+  `tokio-tungstenite` 0.28→0.30, and `@types/node` 22→26 (no source changes;
+  all gates green). Deferred `typescript` 7 and `eslint` 10 — the current
+  `eslint-config-next` tooling does not support them yet.
 - Operator terminal migrated off Cloudflare/vinext/Wrangler to standard
   Next.js on Node; removed the unused D1 database, worker, and hosting scaffold.
 - `cargo-deny` policy: `LicenseRef-Proprietary` + `publish = false` on all
