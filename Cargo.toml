@@ -72,7 +72,7 @@ rust-version = "1.88"
 [workspace.dependencies]
 axum = "0.8"
 arrow-array = "56.2"
-arrow-schema = "56.2"
+arrow-schema = "59.1"
 crc32fast = "1.4"
 blake3 = "1.8"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
