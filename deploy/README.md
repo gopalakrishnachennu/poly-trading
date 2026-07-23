@@ -15,6 +15,31 @@ Then open <http://localhost:3000> (dashboard), <http://localhost:8088/healthz>
 (API), and <http://localhost:3001> (Grafana). Stop with `docker compose -f
 deploy/docker-compose.yml down`.
 
+## Observability
+
+The API exposes read-only Prometheus metrics at
+<http://localhost:8088/metrics>:
+
+- `poly_terminal_poll_success_total` / `poly_terminal_poll_failure_total`
+  (counters)
+- `poly_terminal_last_success_timestamp_ms` /
+  `poly_terminal_last_failure_timestamp_ms` (gauges)
+
+Prometheus (<http://localhost:9090>) scrapes the API every 15s and evaluates
+[`prometheus/alerts.yml`](prometheus/alerts.yml):
+
+- **TerminalProjectionPollFailures** — upstream polling has failed for ≥2m.
+- **TerminalProjectionStale** — no successful refresh for >30s (NO_TRADE must
+  remain enforced).
+
+Grafana (<http://localhost:3001>, anonymous viewer) auto-provisions the
+Prometheus datasource and the **Poly Terminal — Read-Only Projection** dashboard
+(`uid: poly-terminal-projection`): projection freshness, gateway up/down,
+cumulative failures, poll rate, and staleness against the 30s alert threshold.
+The dashboard and datasource are provisioned read-only from
+[`grafana/`](grafana); validate rules with
+`promtool check config prometheus/prometheus.yml`.
+
 ## Optional durable-service fixture
 
 To exercise local persistence, event infrastructure, and a free S3-compatible

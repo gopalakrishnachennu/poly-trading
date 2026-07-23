@@ -8,6 +8,11 @@ rather than released package versions.
 ## [Unreleased]
 
 ### Added
+- Observability: provisioned Grafana dashboard (`Poly Terminal — Read-Only
+  Projection`) and pinned Prometheus datasource UID; mounted the dashboards
+  directory in `deploy/docker-compose.yml`. Verified the Prometheus config and
+  alert rules with `promtool` and confirmed Grafana provisions cleanly. Alert
+  metric names match the gateway's real `/metrics` exports.
 - Repository standards: `LICENSE` (proprietary), `SECURITY.md`,
   `CONTRIBUTING.md`, `CODEOWNERS`, PR template, `.editorconfig`, `CHANGELOG.md`.
 - `Makefile` giving local/CI parity (`make verify`, `make ci`, `make tla`, …).
