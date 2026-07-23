@@ -87,13 +87,50 @@ be compared against the market mid. That comparison — not top-of-book
 complete-set arb — is the more promising strategy surface to build and backtest
 next.
 
+## Directional fair-value model (built) — and why it can't be validated yet
+
+The directional idea above is now implemented as a runnable backtest:
+
+```bash
+python3 scripts/backtest_fair_value.py
+```
+
+It estimates each asset's realized index volatility, computes a zero-drift
+Gaussian fair Up-probability `P(Up) = Phi(ln(S/K) / (sigma * sqrt(tau)))` at a
+chosen minutes-to-expiry, compares it to the market's Up mid, and simulates a
+taker that buys the leg the model thinks is underpriced. It reports calibration
+(Brier score, directional hit rate) and per-market P&L.
+
+**The blocker is sample size, and it is severe.** The independent unit is the
+*market* (one resolvable outcome per hour), not the tick. The current capture
+contains **14 hourly markets, 10 of them long enough to use** — about 10 coin
+flips. Nothing about a strategy can be validated or rejected at that N.
+
+Illustrative output on those 10 markets (do **not** read this as an edge):
+
+| Metric | Value |
+| --- | --- |
+| Usable markets | 10 |
+| Realized Up rate | 20% (Down won 8 of 10 — the window was a downtrend) |
+| Brier score — model vs market mid | 0.169 vs 0.176 (essentially identical) |
+| Directional hit — model vs market | 70% vs 70% |
+| Simulated taker trades | 5, all "winners", +$0.17/trade |
+
+The 5 winning trades are an artifact of a one-directional window: the market
+drifted down, the model leaned Down, so every short "won". The model shows **no
+skill the market mid does not already have** (near-identical Brier). That is
+exactly what a too-small, single-regime sample produces, and it is why more data
+— not more modelling — is the next requirement.
+
 ## Recommended next steps
 
-1. **Widen the capture** (more assets, multiple days, volatile + resolution
-   windows) and re-run this tool to confirm the calm-regime result holds.
-2. **Build a fair-value model** from `reference_price` vs `target_price` +
-   time-to-expiry, and measure model-mid divergence against realized outcomes on
-   the frozen paper datasets (a proper walk-forward backtest).
+1. **Widen the capture first — this is the gating item.** Run the read-only
+   tick capture continuously for weeks across calm *and* volatile regimes to
+   accumulate hundreds+ of resolved hourly markets. The analysis tooling
+   (`analyze_paper_edge.py`, `backtest_fair_value.py`) is ready to consume it.
+2. **Then re-run the backtest** and judge the model on Brier/hit-rate/P&L
+   against the market mid with enough markets for the numbers to mean something,
+   walking forward so volatility is always estimated out-of-sample.
 3. **Only then** decide whether the economically viable strategy is directional,
    maker-based, or dislocation-triggered — and point the (excellent) safety
    stack at whichever one the evidence supports.
