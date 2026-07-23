@@ -220,12 +220,26 @@ function parseUsdMicros(value: string): string {
 const NEURAL_TONES: Record<string, string> = { green: "#2de38e", amber: "#ffad18", red: "#ff5364", blue: "#628bff" };
 const NEURAL_LAYERS = [5, 7, 7, 3];
 
-// Animated neural-network graph: layered neurons with weighted connections and
-// signal pulses flowing input -> output. It is a live visualisation of the
-// decision pipeline (feeds -> projection -> strategy -> decision), tinted by the
-// current system tone and busier while a paper session is active.
-function NeuralGraph({ active, tone }: { active: boolean; tone: string }) {
+type NeuralSignal = { pUp: number; side: "UP" | "DOWN"; confidence: number; edge: number } | null;
+
+// Standard normal CDF (Zelen & Severo rational approximation).
+function normalCdf(x: number): number {
+  const t = 1 / (1 + 0.2316419 * Math.abs(x));
+  const d = 0.3989422804 * Math.exp(-x * x / 2);
+  const p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
+  return x >= 0 ? 1 - p : p;
+}
+
+// Animated neural-network graph driven by the live fair-value model signal.
+// Layered neurons (feeds -> projection -> strategy -> decision) with weighted
+// connections and pulses flowing input -> output. It leans green when the model
+// favours Up and red for Down, and fires faster/brighter as conviction rises.
+// A ref feeds the live signal into the animation without restarting it.
+function NeuralGraph({ signal, tone }: { signal: NeuralSignal; tone: string }) {
   const canvas = useRef<HTMLCanvasElement>(null);
+  const signalRef = useRef(signal);
+  const toneRef = useRef(tone);
+  useEffect(() => { signalRef.current = signal; toneRef.current = tone; }, [signal, tone]);
   useEffect(() => {
     const node = canvas.current;
     if (!node) return;
@@ -233,12 +247,10 @@ function NeuralGraph({ active, tone }: { active: boolean; tone: string }) {
     if (!ctx) return;
     const layers = NEURAL_LAYERS;
     const ratio = window.devicePixelRatio || 1;
-    const accent = NEURAL_TONES[tone] ?? NEURAL_TONES.blue;
-    // Stable connection weights for this mount.
     const weights = layers.slice(0, -1).map((count, li) =>
       Array.from({ length: count }, () => Array.from({ length: layers[li + 1] }, () => 0.12 + Math.random() * 0.88)));
-    const spawn = () => ({ layer: 0, from: (Math.random() * layers[0]) | 0, to: (Math.random() * layers[1]) | 0, t: Math.random(), speed: (active ? 0.014 : 0.008) + Math.random() * 0.012 });
-    const pulses = Array.from({ length: active ? 22 : 11 }, spawn);
+    const spawn = () => ({ layer: 0, from: (Math.random() * layers[0]) | 0, to: (Math.random() * layers[1]) | 0, t: Math.random(), base: 0.006 + Math.random() * 0.01 });
+    const pulses = Array.from({ length: 22 }, spawn);
     let frame = 0;
     let raf = 0;
     const nodesAt = (w: number, h: number) => layers.map((count, li) => {
@@ -247,23 +259,25 @@ function NeuralGraph({ active, tone }: { active: boolean; tone: string }) {
     });
     const draw = () => {
       frame += 1;
+      const sig = signalRef.current;
+      const conf = sig ? 0.12 + sig.confidence * 0.88 : 0.3;
+      const accent = sig ? (sig.side === "UP" ? NEURAL_TONES.green : NEURAL_TONES.red) : (NEURAL_TONES[toneRef.current] ?? NEURAL_TONES.blue);
+      const speed = 0.5 + conf * 1.7;
       const w = node.clientWidth || 420;
       const h = node.clientHeight || 170;
       if (node.width !== Math.floor(w * ratio)) { node.width = Math.floor(w * ratio); node.height = Math.floor(h * ratio); }
       ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
       ctx.clearRect(0, 0, w, h);
       const nodes = nodesAt(w, h);
-      // connections
       ctx.lineWidth = 1;
       for (let li = 0; li < nodes.length - 1; li += 1)
         for (let a = 0; a < nodes[li].length; a += 1)
           for (let b = 0; b < nodes[li + 1].length; b += 1) {
-            ctx.strokeStyle = `rgba(57,199,255,${0.03 + weights[li][a][b] * 0.09})`;
+            ctx.strokeStyle = `rgba(57,199,255,${0.03 + weights[li][a][b] * (0.05 + conf * 0.1)})`;
             ctx.beginPath(); ctx.moveTo(nodes[li][a].x, nodes[li][a].y); ctx.lineTo(nodes[li + 1][b].x, nodes[li + 1][b].y); ctx.stroke();
           }
-      // signal pulses
       for (const p of pulses) {
-        p.t += p.speed;
+        p.t += p.base * speed;
         if (p.t >= 1) {
           if (p.layer < nodes.length - 2) { p.layer += 1; p.from = p.to; p.to = (Math.random() * layers[p.layer + 1]) | 0; p.t = 0; }
           else Object.assign(p, spawn());
@@ -273,22 +287,22 @@ function NeuralGraph({ active, tone }: { active: boolean; tone: string }) {
         const B = nodes[p.layer + 1][p.to];
         const x = A.x + (B.x - A.x) * p.t;
         const y = A.y + (B.y - A.y) * p.t;
-        const halo = ctx.createRadialGradient(x, y, 0, x, y, 7);
+        const radius = 4 + conf * 5;
+        const halo = ctx.createRadialGradient(x, y, 0, x, y, radius);
         halo.addColorStop(0, accent); halo.addColorStop(1, "transparent");
-        ctx.fillStyle = halo; ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = halo; ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.fill();
         ctx.fillStyle = "#f4fbff"; ctx.beginPath(); ctx.arc(x, y, 1.5, 0, Math.PI * 2); ctx.fill();
       }
-      // neurons
       for (let li = 0; li < nodes.length; li += 1)
         for (let ni = 0; ni < nodes[li].length; ni += 1) {
           const n = nodes[li][ni];
-          const beat = 0.5 + 0.5 * Math.sin(frame * 0.05 + li * 0.8 + ni);
+          const beat = 0.5 + 0.5 * Math.sin(frame * (0.03 + conf * 0.06) + li * 0.8 + ni);
           const io = li === 0 || li === nodes.length - 1;
           const color = io ? accent : "#39c7ff";
-          const r = (io ? 3.2 : 2.4) + beat * 1.5;
+          const r = (io ? 3.2 : 2.4) + beat * (1 + conf);
           const glow = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, r * 3.2);
           glow.addColorStop(0, color); glow.addColorStop(1, "transparent");
-          ctx.globalAlpha = 0.18 + beat * 0.32; ctx.fillStyle = glow;
+          ctx.globalAlpha = 0.16 + beat * (0.2 + conf * 0.3); ctx.fillStyle = glow;
           ctx.beginPath(); ctx.arc(n.x, n.y, r * 3.2, 0, Math.PI * 2); ctx.fill();
           ctx.globalAlpha = 1; ctx.fillStyle = color;
           ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, Math.PI * 2); ctx.fill();
@@ -297,7 +311,7 @@ function NeuralGraph({ active, tone }: { active: boolean; tone: string }) {
     };
     draw();
     return () => cancelAnimationFrame(raf);
-  }, [active, tone]);
+  }, []);
   return <canvas className="neural-graph" ref={canvas} role="img" aria-label="Decision-pipeline neural graph" />;
 }
 
@@ -612,6 +626,29 @@ export default function Terminal() {
   const paperState = paper === null ? "RECONCILING" : paper.active ? "RUNNING" : "IDLE";
   const paperStateDetail = paperStatusError || paperAuditError || paperMessage || (paper === null ? "awaiting paper-status authority" : "one-week evidence mode");
 
+  // Live fair-value model signal for the selected asset, computed from the same
+  // inputs as the offline betting engine: index price vs strike, time to expiry,
+  // and volatility estimated from the received reference history. Telemetry only.
+  const signal = useMemo<NeuralSignal>(() => {
+    if (!asset) return null;
+    const prices = history[selected].map(Number).filter((value) => Number.isFinite(value) && value > 0);
+    if (prices.length < 8) return null;
+    const returns: number[] = [];
+    for (let i = 1; i < prices.length; i += 1) returns.push(Math.log(prices[i] / prices[i - 1]));
+    if (returns.length < 6) return null;
+    const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
+    const variance = returns.reduce((a, b) => a + (b - mean) ** 2, 0) / returns.length;
+    const sigmaPerSample = Math.sqrt(variance);
+    const strike = Number(asset.target_price_micros);
+    const spot = Number(asset.reference_price_micros);
+    const tauSamples = Math.max(1, (asset.end_time_ms - now) / 1000); // ~1 reference sample per second
+    const sigmaTau = sigmaPerSample * Math.sqrt(tauSamples);
+    if (!(spot > 0 && strike > 0 && sigmaTau > 0)) return null;
+    const pUp = normalCdf(Math.log(spot / strike) / sigmaTau);
+    const upMid = (Number(asset.up_book.best_bid_micros) + Number(asset.up_book.best_ask_micros)) / 2 / 1_000_000;
+    return { pUp, side: pUp >= 0.5 ? "UP" : "DOWN", confidence: Math.min(1, Math.abs(pUp - 0.5) * 2), edge: pUp - upMid };
+  }, [asset, history, selected, now]);
+
   const commands = useMemo(() => {
     const list: { label: string; hint: string; run: () => void }[] = [];
     WORKSPACES.forEach((ws, index) => list.push({ label: `Go to ${ws}`, hint: `F${index + 1}`, run: () => setWorkspace(ws) }));
@@ -687,7 +724,7 @@ export default function Terminal() {
     <section className="paper-section" aria-label="Paper campaign telemetry">
       <div className="paper-section-head"><div><span className="panel-code">P1</span><h2>CAMPAIGN TELEMETRY / TRADES</h2></div><span>{paper?.session_id ?? "NO SESSION"} · {paper?.events_recorded ?? 0} EVENTS</span></div>
       <div className="paper-section-grid">
-        <div className="paper-neural"><div className="section-label">DECISION / EVIDENCE FIELD <span>TELEMETRY ONLY</span></div><div className="neural-wrap"><NeuralGraph active={paper?.active ?? false} tone={statusTone}/><div className="neural-legend"><span>FEEDS</span><span>PROJECTION</span><span>STRATEGY</span><span>DECISION</span></div></div><div className="paper-metrics"><span>AVAILABLE CASH <b>{usd(paper?.available_cash_micros)}</b></span><span>UNREALIZED <b>{signedUsd(paper?.unrealized_pnl_micros)}</b></span><span>MAX DRAWDOWN <b>{usd(paper?.max_drawdown_micros)}</b></span><span>CVaR <b>{usd(paper?.cvar_micros)}</b></span><span>HEDGE FAILURES <b>{paper?.hedge_failures ?? "—"}</b></span><span>FILL RATE <b>{paper ? `${(paper.fill_rate_bps / 100).toFixed(2)}%` : "—"}</b></span><span>DATA COVERAGE <b>{paper ? `${(paper.data_coverage_bps / 100).toFixed(2)}%` : "—"}</b></span><span>CHECKPOINTS <b>{paper?.checkpoints ?? "—"}</b></span></div></div>
+        <div className="paper-neural"><div className="section-label">DECISION / EVIDENCE FIELD <span>{selected} · TELEMETRY ONLY</span></div><div className="neural-wrap"><NeuralGraph signal={signal} tone={statusTone}/><div className={`neural-readout ${signal ? (signal.side === "UP" ? "lean-up" : "lean-down") : ""}`}>{signal ? <><b>LEAN {signal.side}</b><span>P(UP) {signal.pUp.toFixed(2)}</span><span>CONF {(signal.confidence * 100).toFixed(0)}%</span><span>EDGE {signal.edge >= 0 ? "+" : ""}{(signal.edge * 100).toFixed(1)}%</span></> : <span>MODEL — INSUFFICIENT LIVE HISTORY</span>}</div><div className="neural-legend"><span>FEEDS</span><span>PROJECTION</span><span>STRATEGY</span><span>DECISION</span></div></div><div className="paper-metrics"><span>AVAILABLE CASH <b>{usd(paper?.available_cash_micros)}</b></span><span>UNREALIZED <b>{signedUsd(paper?.unrealized_pnl_micros)}</b></span><span>MAX DRAWDOWN <b>{usd(paper?.max_drawdown_micros)}</b></span><span>CVaR <b>{usd(paper?.cvar_micros)}</b></span><span>HEDGE FAILURES <b>{paper?.hedge_failures ?? "—"}</b></span><span>FILL RATE <b>{paper ? `${(paper.fill_rate_bps / 100).toFixed(2)}%` : "—"}</b></span><span>DATA COVERAGE <b>{paper ? `${(paper.data_coverage_bps / 100).toFixed(2)}%` : "—"}</b></span><span>CHECKPOINTS <b>{paper?.checkpoints ?? "—"}</b></span></div></div>
         <div className="paper-contracts"><div className="section-label">CONTRACT ACTIVITY <span>SEPARATE STREAMS</span></div>{paper?.contracts.length ? paper.contracts.map((contract) => <div className="contract-row" key={contract.asset}><strong>{contract.asset}</strong><span>{contract.last_decision}</span><span>{contract.observations} OBS</span><b>{signedDecimal(contract.realized_pnl_micros)}</b></div>) : <div className="paper-empty">START A PAPER SESSION TO RECORD BTC + ETH</div>}</div>
         <div className="paper-trades"><div className="section-label">SIMULATED TRADES <span>{paper?.trades.length ?? 0} RECENT</span></div>{paper?.trades.length ? <div className="trade-table">{paper.trades.slice().reverse().slice(0, 12).map((trade) => <div className="trade-row" key={trade.trade_id}><b>{trade.asset}</b><span>{trade.state}</span><span>{quantity(trade.quantity_micros)} pair</span><span>{decimal(trade.cost_micros)}</span><strong>{signedDecimal(trade.locked_pnl_micros)}</strong></div>)}</div> : <div className="paper-empty">NO FILLS — CONSERVATIVE NO_TRADE IS VALID</div>}</div>
       </div>
