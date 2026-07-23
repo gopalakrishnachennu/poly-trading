@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
 """Live directional paper trader for the hourly BTC/ETH markets.
 
-Watches the read-only projection gateway in real time, runs a strategy from
-scripts/hourly_engine.py against the live tape, opens at most ONE simulated
-position per hourly market, and settles it against the realised outcome when the
-hour rolls over. State and a GUI-readable report are persisted to
-``var/live-paper/``.
+Watches the read-only projection gateway in real time and runs one or more
+strategies from scripts/hourly_engine.py side by side. Each strategy keeps its
+own independent book (bankroll, open positions, settled bets) over the same
+live tape, so they can be compared honestly. Each book opens at most ONE
+simulated position per hourly market and settles it against the realised
+outcome when the hour rolls over.
 
 This is PAPER ONLY. It holds no credential, wallet, signer or transport, places
-no order, and moves no money — it records what a strategy *would* have done on
-live data. Wiring real execution is a separate, deliberate step you own.
+no order, and moves no money — it records what each strategy *would* have done
+on live data. Wiring real execution is a separate, deliberate step you own.
 
 Usage
 -----
-  python3 scripts/live_paper_trader.py                       # fair_value, $1000
-  python3 scripts/live_paper_trader.py --strategy multi_momentum --principal 500
-  python3 scripts/live_paper_trader.py --interval 10
+  python3 scripts/live_paper_trader.py                       # a sensible slate
+  python3 scripts/live_paper_trader.py --strategy all
+  python3 scripts/live_paper_trader.py --strategy favorite,multi_momentum
+  python3 scripts/live_paper_trader.py --principal 500 --interval 10
 """
 from __future__ import annotations
 
@@ -31,7 +33,7 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from hourly_engine import (  # noqa: E402
-    DOLLAR, HOUR_MS, Obs, BookImbalance, FairValue, Favorite, Momentum,
+    DOLLAR, Obs, BookImbalance, FairValue, Favorite, Momentum,
     MultiMomentum, VolRegime, VOL_MIN_STEP_MS, VOL_PRIOR_RATE, VOL_FLOOR_FRACTION,
     VOL_FULL_WEIGHT_MS, expiry_ms,
 )
@@ -41,6 +43,7 @@ BUILDERS = {
     "multi_momentum": MultiMomentum, "vol_regime": VolRegime,
     "book_imbalance": BookImbalance,
 }
+DEFAULT_SLATE = ["fair_value", "multi_momentum", "favorite", "book_imbalance"]
 
 
 def series_variance_rate(samples: list[tuple[int, float]]) -> float:
@@ -105,17 +108,45 @@ def to_obs(asset: dict, now_ms: int) -> Obs | None:
         return None
 
 
-class LiveTrader:
-    def __init__(self, strategy, principal: float, out_dir: str, min_stake: float = 1.0):
+class Book:
+    """One strategy's independent simulated book."""
+
+    def __init__(self, strategy, principal: float):
         self.strategy = strategy
         self.principal = principal
         self.bankroll = principal
+        self.positions: dict[tuple, dict] = {}
+        self.bets: list[dict] = []
+
+    @property
+    def wins(self) -> int:
+        return sum(1 for b in self.bets if b["won"])
+
+    def report(self) -> dict:
+        return {
+            "strategy": self.strategy.name,
+            "principal": self.principal,
+            "bankroll": round(self.bankroll, 4),
+            "pnl": round(self.bankroll - self.principal, 4),
+            "settled": len(self.bets),
+            "wins": self.wins,
+            "open_positions": [{
+                "asset": p["asset"], "market": key[1][:10], "side": p["side"],
+                "price": p["price"], "stake": p["stake"], "t": p["t"],
+            } for key, p in self.positions.items()],
+            "bets": self.bets[-40:],
+        }
+
+
+class LiveTrader:
+    def __init__(self, strategies, principal: float, out_dir: str, min_stake: float = 1.0):
+        self.books = [Book(s, principal) for s in strategies]
+        self.principal = principal
         self.out_dir = out_dir
         self.min_stake = min_stake
         self.started_at = int(time.time() * 1000)
-        self.markets: dict[tuple, dict] = {}   # (asset, condition) -> live state
-        self.index: list[tuple[int, float]] = []  # (t, price) for volatility
-        self.bets: list[dict] = []
+        self.markets: dict[tuple, dict] = {}
+        self.index: list[tuple[int, float]] = []
         os.makedirs(out_dir, exist_ok=True)
         self.state_path = os.path.join(out_dir, "state.json")
         self.report_path = os.path.join(out_dir, "report.json")
@@ -126,44 +157,38 @@ class LiveTrader:
         try:
             with open(self.state_path) as f:
                 s = json.load(f)
-            if s.get("strategy") != self.strategy.name:
-                print("strategy changed; starting a fresh live book", flush=True)
-                return
-            self.bankroll = s.get("bankroll", self.principal)
-            self.principal = s.get("principal", self.principal)
-            self.bets = s.get("bets", [])
+            by_name = {b["strategy"]: b for b in s.get("books", [])}
+            restored = 0
+            for book in self.books:
+                saved = by_name.get(book.strategy.name)
+                if not saved:
+                    continue
+                book.bankroll = saved.get("bankroll", book.principal)
+                book.principal = saved.get("principal", book.principal)
+                book.bets = saved.get("bets", [])
+                restored += 1
             self.index = [tuple(x) for x in s.get("index", [])][-4000:]
             self.started_at = s.get("started_at", self.started_at)
-            print(f"resumed live book: ${self.bankroll:.2f} over {len(self.bets)} settled bets", flush=True)
-        except (OSError, ValueError, KeyError):
+            if restored:
+                print(f"resumed {restored} live book(s)", flush=True)
+        except (OSError, ValueError, KeyError, TypeError):
             pass
 
     def _save(self):
         tmp = self.state_path + ".tmp"
         with open(tmp, "w") as f:
             json.dump({
-                "strategy": self.strategy.name, "principal": self.principal,
-                "bankroll": self.bankroll, "bets": self.bets[-500:],
+                "books": [{"strategy": b.strategy.name, "principal": b.principal,
+                           "bankroll": b.bankroll, "bets": b.bets[-300:]} for b in self.books],
                 "index": self.index[-4000:], "started_at": self.started_at,
             }, f)
         os.replace(tmp, self.state_path)
 
-        wins = sum(1 for b in self.bets if b["won"])
-        open_positions = [{
-            "asset": m["asset"], "market": key[1][:10], "side": m["position"]["side"],
-            "price": m["position"]["price"], "stake": m["position"]["stake"],
-            "t": m["position"]["t"],
-        } for key, m in self.markets.items() if m.get("position") and not m.get("settled")]
         report = {
             "generated_at_ms": int(time.time() * 1000),
             "paper_only": True, "live": True,
-            "strategy": self.strategy.name,
-            "principal": self.principal, "bankroll": round(self.bankroll, 4),
-            "pnl": round(self.bankroll - self.principal, 4),
-            "settled": len(self.bets), "wins": wins,
             "started_at_ms": self.started_at,
-            "open_positions": open_positions,
-            "bets": self.bets[-40:],
+            "books": [b.report() for b in self.books],
         }
         tmp = self.report_path + ".tmp"
         with open(tmp, "w") as f:
@@ -172,27 +197,25 @@ class LiveTrader:
 
     # ---------------- trading ----------------
     def settle(self, key, market):
-        """Resolve a finished hour: Up wins if the last index >= strike."""
-        if market.get("settled") or not market["obs"]:
-            return
-        market["settled"] = True
+        """Resolve a finished hour for every book: Up wins if last index >= strike."""
         last = market["obs"][-1]
         up_wins = last.s >= market["strike"]
-        position = market.get("position")
-        if not position:
-            return
-        won = (position["side"] == "UP") == up_wins
-        gross = position["shares"] if won else 0.0
-        pnl = gross - position["stake"]
-        self.bankroll += pnl
-        self.bets.append({
-            "t": position["t"], "settled_t": last.t, "asset": market["asset"],
-            "market": key[1][:10], "side": position["side"],
-            "price": round(position["price"], 4), "stake": round(position["stake"], 2),
-            "won": won, "pnl": round(pnl, 4), "bankroll": round(self.bankroll, 4),
-        })
-        print(f"  settled {market['asset']} {position['side']} @ {position['price']:.3f} "
-              f"-> {'WON' if won else 'LOST'} {pnl:+.2f} (bankroll ${self.bankroll:.2f})", flush=True)
+        for book in self.books:
+            position = book.positions.pop(key, None)
+            if not position:
+                continue
+            won = (position["side"] == "UP") == up_wins
+            pnl = (position["shares"] if won else 0.0) - position["stake"]
+            book.bankroll += pnl
+            book.bets.append({
+                "t": position["t"], "settled_t": last.t, "asset": position["asset"],
+                "market": key[1][:10], "side": position["side"],
+                "price": round(position["price"], 4), "stake": round(position["stake"], 2),
+                "won": won, "pnl": round(pnl, 4), "bankroll": round(book.bankroll, 4),
+            })
+            print(f"  settled [{book.strategy.name}] {position['asset']} {position['side']} "
+                  f"@ {position['price']:.3f} -> {'WON' if won else 'LOST'} {pnl:+.2f} "
+                  f"(bankroll ${book.bankroll:.2f})", flush=True)
 
     def tick(self, snapshot: dict):
         now_ms = int(time.time() * 1000)
@@ -204,38 +227,38 @@ class LiveTrader:
             key = (asset.get("asset"), asset.get("condition_id"))
             live_keys.add(key)
             market = self.markets.setdefault(key, {
-                "asset": key[0], "strike": obs.k, "obs": [], "position": None, "settled": False,
+                "asset": key[0], "strike": obs.k, "obs": [],
             })
             market["obs"].append(obs)
             if len(market["obs"]) > 2000:
                 market["obs"] = market["obs"][-2000:]
             self.index.append((obs.t, obs.s))
 
-            if market["position"] or market["settled"]:
-                continue
-            self.strategy.reset(series_variance_rate(self.index))
-            decision = self.strategy.decide(market["obs"], market)
-            if not decision:
-                continue
-            side, frac, price = decision
-            stake = min(self.bankroll, max(self.min_stake, frac * self.bankroll))
-            if not (0 < price < 1) or stake < self.min_stake or stake > self.bankroll:
-                continue
-            market["position"] = {
-                "side": side, "price": price, "stake": stake,
-                "shares": stake / price, "t": obs.t,
-            }
-            print(f"  OPEN {key[0]} {side} @ {price:.3f} stake ${stake:.2f} "
-                  f"({(obs.tau_ms/60000):.0f}m to expiry)", flush=True)
+            rate = series_variance_rate(self.index)
+            for book in self.books:
+                if key in book.positions or any(b["market"] == key[1][:10] for b in book.bets[-8:]):
+                    continue
+                book.strategy.reset(rate)
+                decision = book.strategy.decide(market["obs"], market)
+                if not decision:
+                    continue
+                side, frac, price = decision
+                stake = min(book.bankroll, max(self.min_stake, frac * book.bankroll))
+                if not (0 < price < 1) or stake < self.min_stake or stake > book.bankroll:
+                    continue
+                book.positions[key] = {
+                    "asset": key[0], "side": side, "price": price, "stake": stake,
+                    "shares": stake / price, "t": obs.t,
+                }
+                print(f"  OPEN [{book.strategy.name}] {key[0]} {side} @ {price:.3f} "
+                      f"stake ${stake:.2f} ({(obs.tau_ms / 60000):.0f}m to expiry)", flush=True)
 
-        # Any market that vanished from the projection has rolled over: settle it.
+        # Markets that vanished from the projection have rolled over.
         for key, market in list(self.markets.items()):
-            if key not in live_keys and not market.get("settled"):
-                self.settle(key, market)
-        # Drop settled markets once resolved, keeping memory bounded.
-        for key, market in list(self.markets.items()):
-            if market.get("settled"):
-                self.markets.pop(key, None)
+            if key in live_keys or not market["obs"]:
+                continue
+            self.settle(key, market)
+            self.markets.pop(key, None)
         self.index = self.index[-4000:]
         self._save()
 
@@ -243,17 +266,25 @@ class LiveTrader:
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--url", default=os.environ.get("POLY_TERMINAL_API_URL", "http://127.0.0.1:8088") + "/api/v1/terminal/snapshot")
-    ap.add_argument("--strategy", choices=sorted(BUILDERS), default="fair_value")
+    ap.add_argument("--strategy", default=",".join(DEFAULT_SLATE),
+                    help='comma-separated strategy names, or "all"')
     ap.add_argument("--principal", type=float, default=1000.0)
     ap.add_argument("--interval", type=float, default=10.0)
     ap.add_argument("--timeout", type=float, default=4.0)
     ap.add_argument("--out-dir", default="var/live-paper")
     args = ap.parse_args()
 
-    strategy = BUILDERS[args.strategy]()
-    trader = LiveTrader(strategy, args.principal, args.out_dir)
-    print(f"live paper trader: {strategy.name} | principal ${args.principal:.2f} | "
-          f"polling {args.url} every {args.interval:g}s", flush=True)
+    names = sorted(BUILDERS) if args.strategy == "all" else [n.strip() for n in args.strategy.split(",") if n.strip()]
+    unknown = [n for n in names if n not in BUILDERS]
+    if unknown:
+        ap.error(f"unknown strategy: {', '.join(unknown)}. choose from {', '.join(sorted(BUILDERS))} or 'all'")
+    strategies = [BUILDERS[n]() for n in names]
+
+    trader = LiveTrader(strategies, args.principal, args.out_dir)
+    print(f"live paper trader: {len(strategies)} book(s) @ ${args.principal:.2f} each", flush=True)
+    for s in strategies:
+        print(f"  - {s.name}", flush=True)
+    print(f"polling {args.url} every {args.interval:g}s", flush=True)
     print("PAPER ONLY — no credential, order, or capital authority.", flush=True)
 
     skipped = 0
