@@ -75,6 +75,9 @@ backtest: ## Directional fair-value walk-forward backtest with sensitivity sweep
 engine-report: ## Refresh the simulated bets shown in the terminal (F4 POSITIONS)
 	python3 scripts/hourly_engine.py --json var/engine-report.json
 
+live-paper: ## Run the live directional paper trader (simulated money, no orders)
+	python3 scripts/live_paper_trader.py
+
 clean: ## Remove Rust build artifacts and the downloaded TLC jar
 	cargo clean
 	rm -f $(TLA_JAR)

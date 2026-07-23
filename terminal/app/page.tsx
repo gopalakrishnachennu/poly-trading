@@ -482,6 +482,9 @@ function LiveChart({ points, target }: { points: number[]; target?: string }) {
 type EngineTrade = { t: number; asset: string; market: string; side: string; price: number; stake: number; won: boolean; pnl: number };
 type EngineStrategy = { name: string; bets: number; wins: number; pnl: number; bankroll: number; trades: EngineTrade[] };
 type EngineReport = { generated_at_ms: number; markets: number; assets: string[]; principal: number; walk_forward: boolean; strategies: EngineStrategy[] };
+type LiveBet = { t: number; settled_t: number; asset: string; market: string; side: string; price: number; stake: number; won: boolean; pnl: number; bankroll: number };
+type LiveOpen = { asset: string; market: string; side: string; price: number; stake: number; t: number };
+type LiveReport = { generated_at_ms: number; strategy: string; principal: number; bankroll: number; pnl: number; settled: number; wins: number; started_at_ms: number; open_positions: LiveOpen[]; bets: LiveBet[] };
 
 const WORKSPACES = ["MARKETS", "NEURAL", "RISK", "POSITIONS", "SETTLEMENT", "OPERATIONS", "AUDIT", "SETTINGS"] as const;
 type Workspace = (typeof WORKSPACES)[number];
@@ -498,6 +501,8 @@ export default function Terminal() {
   const [engine, setEngine] = useState<EngineReport | null>(null);
   const [engineReason, setEngineReason] = useState("loading offline engine report");
   const [engineStrategy, setEngineStrategy] = useState(0);
+  const [livePaper, setLivePaper] = useState<LiveReport | null>(null);
+  const [livePaperReason, setLivePaperReason] = useState("loading live paper trader");
   const commandRef = useRef<HTMLInputElement>(null);
   // Keep the server and first client render deterministic; the clock starts
   // after hydration so the terminal does not throw away its SSR tree.
@@ -760,6 +765,23 @@ export default function Terminal() {
     return () => { disposed = true; window.clearInterval(timer); };
   }, []);
 
+  // Live directional paper trader (simulated positions against the live tape).
+  useEffect(() => {
+    let disposed = false;
+    const read = async () => {
+      try {
+        const response = await fetch("/api/live-paper", { cache: "no-store" });
+        const payload = await response.json() as { available: boolean; reason?: string; report?: LiveReport };
+        if (disposed) return;
+        if (payload.available && payload.report) { setLivePaper(payload.report); setLivePaperReason(""); }
+        else { setLivePaper(null); setLivePaperReason(payload.reason ?? "live paper trader unavailable"); }
+      } catch { if (!disposed) setLivePaperReason("live paper trader unavailable"); }
+    };
+    void read();
+    const timer = window.setInterval(read, 5_000);
+    return () => { disposed = true; window.clearInterval(timer); };
+  }, []);
+
   const commands = useMemo(() => {
     const list: { label: string; hint: string; run: () => void }[] = [];
     WORKSPACES.forEach((ws, index) => list.push({ label: `Go to ${ws}`, hint: `F${index + 1}`, run: () => setWorkspace(ws) }));
@@ -835,6 +857,39 @@ export default function Terminal() {
   const pPositions = (
       <Panel code="05" title="SIMULATED PAIRS & SETTLEMENT" className="positions-panel" action={<span>{paper?.trades.length ?? 0} PAPER PAIRS</span>}>
         <div className="table-head positions"><span>MARKET</span><span>QTY</span><span>COST</span><span>STATE</span><span>P&amp;L</span></div>{paper?.trades.length ? <div className="paper-position-table">{paper.trades.slice().reverse().slice(0, 4).map((trade) => <div className="paper-position-row" key={trade.trade_id}><strong>{trade.asset}</strong><span>{quantity(trade.quantity_micros)}</span><span>{usd(trade.cost_micros)}</span><span>{trade.state}</span><b>{signedUsd(trade.locked_pnl_micros)}</b></div>)}</div> : <div className="empty-position"><span>—</span><strong>NO SIMULATED PAIRS</strong><small>Conservative NO_TRADE decisions are recorded as evidence; no payout is assumed.</small></div>}<div className="settlement-row"><span><StatusDot tone="amber"/>PENDING PAYOUT {usd(pendingPayout.toString())}</span><span>COMMITTED {usd(pendingCost.toString())}</span><strong className="amber-text">NOT SPENDABLE</strong></div>
+      </Panel>
+  );
+  const pLive = (
+      <Panel code="L1" title="LIVE PAPER TRADER / DIRECTIONAL" className="engine-panel"
+             action={<span className="badge-safe unavailable">{livePaper ? "LIVE · PAPER" : "OFFLINE"}</span>}>
+        {livePaper ? <div className="engine-body">
+          <div className="live-summary">
+            <div><span>BANKROLL</span><b className={livePaper.pnl >= 0 ? "positive" : "negative"}>${livePaper.bankroll.toFixed(2)}</b></div>
+            <div><span>P&amp;L</span><b className={livePaper.pnl >= 0 ? "positive" : "negative"}>{livePaper.pnl >= 0 ? "+" : ""}{livePaper.pnl.toFixed(2)}</b></div>
+            <div><span>SETTLED</span><b>{livePaper.settled}</b></div>
+            <div><span>WIN RATE</span><b>{livePaper.settled ? `${Math.round(100 * livePaper.wins / livePaper.settled)}%` : "—"}</b></div>
+            <div><span>STRATEGY</span><b className="live-strategy">{livePaper.strategy}</b></div>
+          </div>
+          <div className="live-open">
+            <div className="section-label">OPEN POSITIONS <span>{livePaper.open_positions.length}</span></div>
+            {livePaper.open_positions.length ? livePaper.open_positions.map((p) => <div className="live-open-row" key={`${p.market}-${p.t}`}>
+              <b className={p.side === "UP" ? "positive" : "negative"}>{p.side}</b>
+              <span>{p.asset} {p.market}</span><span>@ {p.price.toFixed(3)}</span><span>${p.stake.toFixed(2)}</span>
+              <em>opened {utcTime(p.t).slice(0, 8)}</em>
+            </div>) : <div className="paper-empty">NO OPEN POSITION — WAITING FOR A QUALIFYING SETUP</div>}
+          </div>
+          <div className="table-head engine"><span>TIME</span><span>MKT</span><span>SIDE</span><span>ENTRY</span><span>STAKE</span><span>RESULT</span><span>P&amp;L</span></div>
+          <div className="engine-trades">
+            {livePaper.bets.length ? livePaper.bets.slice().reverse().map((b) => <div className="engine-row" key={`${b.market}-${b.t}`}>
+              <time>{utcTime(b.settled_t).slice(0, 8)}</time><span>{b.asset} {b.market}</span>
+              <b className={b.side === "UP" ? "positive" : "negative"}>{b.side}</b>
+              <span>{b.price.toFixed(3)}</span><span>${b.stake.toFixed(2)}</span>
+              <span className={b.won ? "positive" : "negative"}>{b.won ? "WON" : "LOST"}</span>
+              <strong className={b.pnl >= 0 ? "positive" : "negative"}>{b.pnl >= 0 ? "+" : ""}{b.pnl.toFixed(2)}</strong>
+            </div>) : <div className="paper-empty">NO SETTLED BETS YET — POSITIONS SETTLE AT THE HOUR BOUNDARY</div>}
+          </div>
+          <div className="engine-note"><strong>SIMULATED MONEY ONLY</strong><span>Decisions taken against the live tape and settled on the realised hourly outcome. No credential, wallet, signer or order path exists; nothing here moves money.</span></div>
+        </div> : <div className="paper-empty">{livePaperReason}</div>}
       </Panel>
   );
   const selectedStrategy = engine?.strategies[Math.min(engineStrategy, (engine.strategies.length || 1) - 1)];
@@ -929,7 +984,7 @@ export default function Terminal() {
     {workspace === "MARKETS" && <div className="terminal-grid">{pIdentity}{pChart}{pBook}</div>}
     {workspace === "NEURAL" && <div className="ws-full">{pNeural}</div>}
     {workspace === "RISK" && <div className="ws-stack">{pRisk}{sTelemetry}</div>}
-    {workspace === "POSITIONS" && <div className="ws-flow">{pPositions}{pEngine}</div>}
+    {workspace === "POSITIONS" && <div className="ws-flow">{pLive}{pEngine}</div>}
     {workspace === "SETTLEMENT" && <div className="ws-flow">{pPositions}{pAudit}</div>}
     {workspace === "OPERATIONS" && <div className="ws-flow">{pHealth}{pAudit}</div>}
     {workspace === "AUDIT" && <div className="ws-full">{pAudit}</div>}
