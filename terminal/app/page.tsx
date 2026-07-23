@@ -219,6 +219,7 @@ function parseUsdMicros(value: string): string {
 
 const NEURAL_TONES: Record<string, string> = { green: "#2de38e", amber: "#ffad18", red: "#ff5364", blue: "#628bff" };
 const NEURAL_LAYERS = [5, 7, 7, 3];
+const NEURAL_IO_LABELS = { inputs: ["BTC", "ETH", "REF Δ", "VOL", "TIME"], outputs: ["UP", "HOLD", "DOWN"] };
 
 type NeuralSignal = { pUp: number; side: "UP" | "DOWN"; confidence: number; edge: number } | null;
 
@@ -235,7 +236,7 @@ function normalCdf(x: number): number {
 // connections and pulses flowing input -> output. It leans green when the model
 // favours Up and red for Down, and fires faster/brighter as conviction rises.
 // A ref feeds the live signal into the animation without restarting it.
-function NeuralGraph({ signal, tone }: { signal: NeuralSignal; tone: string }) {
+function NeuralGraph({ signal, tone, labels }: { signal: NeuralSignal; tone: string; labels?: { inputs: string[]; outputs: string[] } }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const signalRef = useRef(signal);
   const toneRef = useRef(tone);
@@ -253,8 +254,9 @@ function NeuralGraph({ signal, tone }: { signal: NeuralSignal; tone: string }) {
     const pulses = Array.from({ length: 22 }, spawn);
     let frame = 0;
     let raf = 0;
+    const padX = labels ? 86 : 20;
     const nodesAt = (w: number, h: number) => layers.map((count, li) => {
-      const x = 20 + li * (w - 40) / (layers.length - 1);
+      const x = padX + li * (w - padX * 2) / (layers.length - 1);
       return Array.from({ length: count }, (_, ni) => ({ x, y: (h / (count + 1)) * (ni + 1) }));
     });
     const draw = () => {
@@ -293,25 +295,54 @@ function NeuralGraph({ signal, tone }: { signal: NeuralSignal; tone: string }) {
         ctx.fillStyle = halo; ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.fill();
         ctx.fillStyle = "#f4fbff"; ctx.beginPath(); ctx.arc(x, y, 1.5, 0, Math.PI * 2); ctx.fill();
       }
+      // Output neurons map to UP / HOLD / DOWN; the model's call is highlighted.
+      const last = nodes.length - 1;
+      const activeOut = !sig || sig.confidence < 0.2 ? 1 : sig.side === "UP" ? 0 : 2;
       for (let li = 0; li < nodes.length; li += 1)
         for (let ni = 0; ni < nodes[li].length; ni += 1) {
           const n = nodes[li][ni];
           const beat = 0.5 + 0.5 * Math.sin(frame * (0.03 + conf * 0.06) + li * 0.8 + ni);
-          const io = li === 0 || li === nodes.length - 1;
-          const color = io ? accent : "#39c7ff";
-          const r = (io ? 3.2 : 2.4) + beat * (1 + conf);
+          const io = li === 0 || li === last;
+          const chosen = li === last && ni === activeOut;
+          const color = chosen ? accent : io ? accent : "#39c7ff";
+          const r = (chosen ? 5 : io ? 3.2 : 2.4) + beat * (1 + conf);
+          const dim = li === last && !chosen ? 0.35 : 1;
           const glow = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, r * 3.2);
           glow.addColorStop(0, color); glow.addColorStop(1, "transparent");
-          ctx.globalAlpha = 0.16 + beat * (0.2 + conf * 0.3); ctx.fillStyle = glow;
+          ctx.globalAlpha = (0.16 + beat * (0.2 + conf * 0.3)) * dim; ctx.fillStyle = glow;
           ctx.beginPath(); ctx.arc(n.x, n.y, r * 3.2, 0, Math.PI * 2); ctx.fill();
-          ctx.globalAlpha = 1; ctx.fillStyle = color;
+          ctx.globalAlpha = dim; ctx.fillStyle = color;
           ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, Math.PI * 2); ctx.fill();
+          if (chosen) {
+            ctx.globalAlpha = 0.5 + beat * 0.5; ctx.strokeStyle = accent; ctx.lineWidth = 1.2;
+            ctx.beginPath(); ctx.arc(n.x, n.y, r + 5 + beat * 3, 0, Math.PI * 2); ctx.stroke();
+          }
+          ctx.globalAlpha = 1;
         }
+      if (labels) {
+        ctx.font = "8px ui-monospace, SFMono-Regular, Menlo, monospace";
+        ctx.textBaseline = "middle";
+        ctx.textAlign = "right";
+        nodes[0].forEach((n, i) => {
+          if (!labels.inputs[i]) return;
+          ctx.fillStyle = "rgba(150,166,175,.95)";
+          ctx.fillText(labels.inputs[i], n.x - 13, n.y);
+        });
+        ctx.textAlign = "left";
+        nodes[last].forEach((n, i) => {
+          if (!labels.outputs[i]) return;
+          const chosen = i === activeOut;
+          ctx.fillStyle = chosen ? accent : "rgba(150,166,175,.55)";
+          ctx.font = `${chosen ? "bold " : ""}8px ui-monospace, SFMono-Regular, Menlo, monospace`;
+          ctx.fillText(labels.outputs[i], n.x + 14, n.y);
+        });
+      }
       raf = requestAnimationFrame(draw);
     };
     draw();
     return () => cancelAnimationFrame(raf);
-  }, []);
+    // `labels` is a stable module constant, so this never restarts mid-animation.
+  }, [labels]);
   return <canvas className="neural-graph" ref={canvas} role="img" aria-label="Decision-pipeline neural graph" />;
 }
 
@@ -378,20 +409,44 @@ function LiveChart({ points, target }: { points: string[]; target?: string }) {
       context.setLineDash([5, 4]); context.strokeStyle = "#ffad18"; context.beginPath(); context.moveTo(0, y(BigInt(target))); context.lineTo(width, y(BigInt(target))); context.stroke(); context.setLineDash([]);
     }
     if (points.length > 1) {
-      context.strokeStyle = "#39c7ff"; context.lineWidth = 2; context.beginPath();
-      points.forEach((point, index) => {
-        const x = index * width / (points.length - 1);
-        const py = y(BigInt(point));
-        if (index === 0) context.moveTo(x, py);
-        else context.lineTo(x, py);
-      });
+      const coords = points.map((point, index) => ({ x: index * width / (points.length - 1), y: y(BigInt(point)) }));
+      // Gradient area under the curve.
+      const fill = context.createLinearGradient(0, 0, 0, height);
+      fill.addColorStop(0, "rgba(57,199,255,.26)");
+      fill.addColorStop(1, "rgba(57,199,255,0)");
+      context.beginPath();
+      context.moveTo(coords[0].x, height);
+      coords.forEach((c) => context.lineTo(c.x, c.y));
+      context.lineTo(coords[coords.length - 1].x, height);
+      context.closePath();
+      context.fillStyle = fill; context.fill();
+      // Glowing trace.
+      context.shadowColor = "rgba(57,199,255,.85)"; context.shadowBlur = 10;
+      context.strokeStyle = "#39c7ff"; context.lineWidth = 2; context.lineJoin = "round";
+      context.beginPath();
+      coords.forEach((c, index) => (index === 0 ? context.moveTo(c.x, c.y) : context.lineTo(c.x, c.y)));
       context.stroke();
+      context.shadowBlur = 0;
+      // Neural-style glow nodes, with the live sample brightest.
+      const step = Math.max(1, Math.floor(coords.length / 24));
+      coords.forEach((c, index) => {
+        const live = index === coords.length - 1;
+        if (index % step !== 0 && !live) return;
+        const r = live ? 3.4 : 1.8;
+        const halo = context.createRadialGradient(c.x, c.y, 0, c.x, c.y, r * 4);
+        halo.addColorStop(0, live ? "#ffffff" : "#39c7ff");
+        halo.addColorStop(1, "transparent");
+        context.fillStyle = halo;
+        context.beginPath(); context.arc(c.x, c.y, r * 4, 0, Math.PI * 2); context.fill();
+        context.fillStyle = live ? "#ffffff" : "#8fe4ff";
+        context.beginPath(); context.arc(c.x, c.y, r, 0, Math.PI * 2); context.fill();
+      });
     }
   }, [points, target]);
   return <canvas className="live-canvas" ref={canvas} role="img" aria-label="Received reference-price history" />;
 }
 
-const WORKSPACES = ["MARKETS", "RISK", "POSITIONS", "SETTLEMENT", "OPERATIONS", "AUDIT", "SETTINGS"] as const;
+const WORKSPACES = ["MARKETS", "NEURAL", "RISK", "POSITIONS", "SETTLEMENT", "OPERATIONS", "AUDIT", "SETTINGS"] as const;
 type Workspace = (typeof WORKSPACES)[number];
 
 export default function Terminal() {
@@ -671,7 +726,7 @@ export default function Terminal() {
       }
       if (event.key === "Escape") { setQuery(""); setCommandOpen(false); commandRef.current?.blur(); return; }
       if ((event.target as HTMLElement | null)?.tagName === "INPUT") return;
-      const match = /^F([1-7])$/.exec(event.key);
+      const match = /^F([1-8])$/.exec(event.key);
       if (match) { event.preventDefault(); setWorkspace(WORKSPACES[Number(match[1]) - 1]); }
     };
     window.addEventListener("keydown", onKey);
@@ -698,6 +753,21 @@ export default function Terminal() {
       <Panel code="03" title="COMPLEMENTARY BOOK" className="book-panel" action={<span>{asset ? `TICK ${decimal(asset.up_book.tick_size_micros)}` : "UNAVAILABLE"}</span>}>
         <MiniBook side="UP" book={asset?.up_book}/><MiniBook side="DOWN" book={asset?.down_book}/>
         <div className="pair-economics"><div><span>RAW BUY PAIR</span><b>{decimal(asset?.pair.buy_pair_cost_micros)}</b></div><div><span>RAW GAP TO 1</span><b>{signedDecimal(asset?.pair.raw_gap_micros)}</b></div><div><span>EXECUTABLE QTY</span><b>{quantity(asset?.pair.executable_quantity_micros)}</b></div><div className="decision"><span>OBSERVATION ONLY</span><b>NO_TRADE</b></div></div>
+      </Panel>
+  );
+  const marketMid = asset ? (Number(asset.up_book.best_bid_micros) + Number(asset.up_book.best_ask_micros)) / 2 / 1_000_000 : null;
+  const pNeural = (
+      <Panel code="N1" title={`NEURAL DECISION MODEL / ${selected}`} className="neural-panel" action={<span className="badge-safe unavailable">OBSERVATION ONLY</span>}>
+        <div className="neural-stage"><NeuralGraph signal={signal} tone={statusTone} labels={NEURAL_IO_LABELS}/></div>
+        <div className="neural-stats">
+          <div><span>MODEL CALL</span><b className={signal ? (signal.side === "UP" ? "positive" : "negative") : ""}>{signal ? (signal.confidence < 0.2 ? "HOLD" : `LEAN ${signal.side}`) : "HOLD"}</b></div>
+          <div><span>P(UP) MODEL</span><b>{signal ? signal.pUp.toFixed(3) : "—"}</b></div>
+          <div><span>MARKET IMPLIED</span><b>{marketMid === null ? "—" : marketMid.toFixed(3)}</b></div>
+          <div><span>EDGE VS MARKET</span><b className={signal ? (signal.edge >= 0 ? "positive" : "negative") : ""}>{signal ? `${signal.edge >= 0 ? "+" : ""}${(signal.edge * 100).toFixed(1)}%` : "—"}</b></div>
+          <div><span>CONFIDENCE</span><b>{signal ? `${(signal.confidence * 100).toFixed(0)}%` : "—"}</b></div>
+          <div><span>TIME TO EXPIRY</span><b>{remainingText}</b></div>
+          <div className="neural-note"><strong>TELEMETRY ONLY</strong><span>Fair-value model observation from public data. No order, signer, capital or execution authority. Model is unvalidated: an edge requires out-of-sample evidence across many markets.</span></div>
+        </div>
       </Panel>
   );
   const pRisk = (
@@ -775,11 +845,12 @@ export default function Terminal() {
     </section>}
 
     {workspace === "MARKETS" && <div className="terminal-grid">{pIdentity}{pChart}{pBook}</div>}
+    {workspace === "NEURAL" && <div className="ws-full">{pNeural}</div>}
     {workspace === "RISK" && <div className="ws-stack">{pRisk}{sTelemetry}</div>}
     {workspace === "POSITIONS" && <div className="ws-flow">{pPositions}{pBook}</div>}
     {workspace === "SETTLEMENT" && <div className="ws-flow">{pPositions}{pAudit}</div>}
     {workspace === "OPERATIONS" && <div className="ws-flow">{pHealth}{pAudit}</div>}
     {workspace === "AUDIT" && <div className="ws-full">{pAudit}</div>}
-    <footer className="statusbar"><span><kbd>F1</kbd> Markets</span><span><kbd>F2</kbd> Risk</span><span><kbd>⌘K</kbd> Display search</span><div/><strong>NO EXTERNAL ORDERS</strong><span>Digest {short(snapshot?.snapshot_digest)}</span><span>Projection v1</span></footer>
+    <footer className="statusbar"><span><kbd>F1</kbd> Markets</span><span><kbd>F2</kbd> Neural</span><span><kbd>F3</kbd> Risk</span><span><kbd>⌘K</kbd> Display search</span><div/><strong>NO EXTERNAL ORDERS</strong><span>Digest {short(snapshot?.snapshot_digest)}</span><span>Projection v1</span></footer>
   </main>;
 }
