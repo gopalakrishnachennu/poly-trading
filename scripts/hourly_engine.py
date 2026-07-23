@@ -129,18 +129,40 @@ def load_markets(paths, asset_filter=None, min_span_min=20.0):
     return markets
 
 
+# Volatility estimation. The index is sampled at ~1s and prints in round units,
+# so most tick-to-tick returns are exactly zero from quantisation; a naive
+# estimate collapses toward zero and makes the model absurdly confident near
+# expiry. Sub-sample to a coarse spacing, scale by real elapsed time, shrink
+# toward a typical hourly prior while history is short, and hard-floor it.
+VOL_MIN_STEP_MS = 20_000
+VOL_PRIOR_HOURLY = 0.004          # ~0.4% per hour, typical for BTC/ETH
+VOL_PRIOR_RATE = (VOL_PRIOR_HOURLY ** 2) / HOUR_MS
+VOL_FULL_WEIGHT_MS = 20 * 60_000
+VOL_FLOOR_FRACTION = 0.25
+
+
 def variance_rate(markets) -> float:
-    """Per-ms realized variance of index log returns across the given markets."""
-    num = den = 0.0
+    """Per-ms realized variance of index log returns, de-noised and shrunk."""
+    num = den = span = 0.0
     for m in markets:
-        for a, b in zip(m.obs, m.obs[1:]):
+        picked = []
+        for o in m.obs:
+            if not picked or o.t - picked[-1].t >= VOL_MIN_STEP_MS:
+                picked.append(o)
+        for a, b in zip(picked, picked[1:]):
             dt = b.t - a.t
             if dt <= 0 or a.s <= 0 or b.s <= 0:
                 continue
             rr = math.log(b.s / a.s)
             num += rr * rr
             den += dt
-    return num / den if den > 0 else 0.0
+        if m.obs:
+            span += m.obs[-1].t - m.obs[0].t
+    if den <= 0:
+        return VOL_PRIOR_RATE
+    weight = min(1.0, span / VOL_FULL_WEIGHT_MS)
+    blended = weight * (num / den) + (1 - weight) * VOL_PRIOR_RATE
+    return max(blended, VOL_PRIOR_RATE * VOL_FLOOR_FRACTION)
 
 
 # --------------------------------------------------------------------------- #
@@ -175,7 +197,8 @@ class FairValue(Strategy):
             return None
         if self.v <= 0 or o.tau_ms <= 0 or o.s <= 0 or o.k <= 0:
             return None
-        p_up = phi(math.log(o.s / o.k) / math.sqrt(self.v * o.tau_ms))
+        # Clamp: never claim near-certainty the estimate cannot support.
+        p_up = min(0.99, max(0.01, phi(math.log(o.s / o.k) / math.sqrt(self.v * o.tau_ms))))
         # buy Up if model prob beats the Up ask; else Down
         edge_up = p_up - o.up_ask
         edge_down = (1 - p_up) - o.down_ask

@@ -223,6 +223,39 @@ const NEURAL_IO_LABELS = { inputs: ["BTC", "ETH", "REF Δ", "VOL", "TIME"], outp
 
 type NeuralSignal = { pUp: number; side: "UP" | "DOWN"; confidence: number; edge: number } | null;
 
+// Volatility estimation. Sampling the reference at ~1s is dominated by feed
+// quantisation (prices print in round units), so most tick-to-tick returns are
+// exactly zero and a naive estimate collapses toward zero — which would make the
+// model absurdly confident near expiry. We therefore sub-sample to a coarse
+// spacing, scale variance by real elapsed time, shrink toward a typical hourly
+// prior while history is short, and hard-floor the result.
+const VOL_MIN_STEP_MS = 20_000;
+const VOL_PRIOR_HOURLY = 0.004; // ~0.4% per hour, typical for BTC/ETH
+const VOL_PRIOR_RATE = (VOL_PRIOR_HOURLY * VOL_PRIOR_HOURLY) / 3_600_000; // variance per ms
+const VOL_FULL_WEIGHT_MS = 20 * 60_000;
+const VOL_FLOOR_FRACTION = 0.25;
+
+function varianceRate(samples: { t: number; p: number }[]): number {
+  const picked: { t: number; p: number }[] = [];
+  for (const sample of samples) {
+    if (!picked.length || sample.t - picked[picked.length - 1].t >= VOL_MIN_STEP_MS) picked.push(sample);
+  }
+  let num = 0;
+  let den = 0;
+  for (let i = 1; i < picked.length; i += 1) {
+    const dt = picked[i].t - picked[i - 1].t;
+    if (dt <= 0 || picked[i].p <= 0 || picked[i - 1].p <= 0) continue;
+    const r = Math.log(picked[i].p / picked[i - 1].p);
+    num += r * r;
+    den += dt;
+  }
+  if (den <= 0) return VOL_PRIOR_RATE;
+  const span = samples[samples.length - 1].t - samples[0].t;
+  const weight = Math.min(1, Math.max(0, span) / VOL_FULL_WEIGHT_MS);
+  const blended = weight * (num / den) + (1 - weight) * VOL_PRIOR_RATE;
+  return Math.max(blended, VOL_PRIOR_RATE * VOL_FLOOR_FRACTION);
+}
+
 // Standard normal CDF (Zelen & Severo rational approximation).
 function normalCdf(x: number): number {
   const t = 1 / (1 + 0.2316419 * Math.abs(x));
@@ -379,7 +412,7 @@ function MiniBook({ side, book }: { side: "UP" | "DOWN"; book?: Book }) {
   </div>;
 }
 
-function LiveChart({ points, target }: { points: string[]; target?: string }) {
+function LiveChart({ points, target }: { points: number[]; target?: string }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     const node = canvas.current;
@@ -398,18 +431,18 @@ function LiveChart({ points, target }: { points: string[]; target?: string }) {
     for (let index = 1; index < 5; index += 1) {
       context.beginPath(); context.moveTo(0, height * index / 5); context.lineTo(width, height * index / 5); context.stroke();
     }
-    const values = points.map(BigInt);
-    if (target && /^\d+$/.test(target)) values.push(BigInt(target));
+    const values = points.slice();
+    if (target && /^\d+$/.test(target)) values.push(Number(target));
     if (values.length < 2) return;
-    const minimum = values.reduce((a, b) => a < b ? a : b);
-    const maximum = values.reduce((a, b) => a > b ? a : b);
-    const range = maximum === minimum ? 1n : maximum - minimum;
-    const y = (value: bigint) => height - 18 - Number((value - minimum) * BigInt(Math.max(1, Math.floor(height - 36))) / range);
+    const minimum = Math.min(...values);
+    const maximum = Math.max(...values);
+    const range = maximum === minimum ? 1 : maximum - minimum;
+    const y = (value: number) => height - 18 - ((value - minimum) / range) * Math.max(1, height - 36);
     if (target && /^\d+$/.test(target)) {
-      context.setLineDash([5, 4]); context.strokeStyle = "#ffad18"; context.beginPath(); context.moveTo(0, y(BigInt(target))); context.lineTo(width, y(BigInt(target))); context.stroke(); context.setLineDash([]);
+      context.setLineDash([5, 4]); context.strokeStyle = "#ffad18"; context.beginPath(); context.moveTo(0, y(Number(target))); context.lineTo(width, y(Number(target))); context.stroke(); context.setLineDash([]);
     }
     if (points.length > 1) {
-      const coords = points.map((point, index) => ({ x: index * width / (points.length - 1), y: y(BigInt(point)) }));
+      const coords = points.map((point, index) => ({ x: index * width / (points.length - 1), y: y(point) }));
       // Gradient area under the curve.
       const fill = context.createLinearGradient(0, 0, 0, height);
       fill.addColorStop(0, "rgba(57,199,255,.26)");
@@ -462,7 +495,7 @@ export default function Terminal() {
   // Keep the server and first client render deterministic; the clock starts
   // after hydration so the terminal does not throw away its SSR tree.
   const [now, setNow] = useState(0);
-  const [history, setHistory] = useState<Record<AssetName, string[]>>({ BTC: [], ETH: [] });
+  const [history, setHistory] = useState<Record<AssetName, { t: number; p: number }[]>>({ BTC: [], ETH: [] });
   const [paper, setPaper] = useState<PaperStatus | null>(null);
   const [paperReport, setPaperReport] = useState<PaperReport | null>(null);
   const [paperPreflight, setPaperPreflight] = useState<PaperPreflight | null>(null);
@@ -518,7 +551,9 @@ export default function Terminal() {
           setError(next.mode === "ready" ? "" : next.reason);
           if (next.mode === "ready") setHistory((prior) => {
             const copy = { ...prior };
-            for (const asset of next.assets) copy[asset.asset] = [...copy[asset.asset], asset.reference_price_micros].slice(-120);
+            // Retain a longer window (~30 min at 1 Hz) so the volatility estimate
+            // has real horizon rather than the last two minutes.
+            for (const asset of next.assets) copy[asset.asset] = [...copy[asset.asset], { t: next.generated_at_ms, p: Number(asset.reference_price_micros) }].slice(-1800);
             return copy;
           });
         }
@@ -686,20 +721,17 @@ export default function Terminal() {
   // and volatility estimated from the received reference history. Telemetry only.
   const signal = useMemo<NeuralSignal>(() => {
     if (!asset) return null;
-    const prices = history[selected].map(Number).filter((value) => Number.isFinite(value) && value > 0);
-    if (prices.length < 8) return null;
-    const returns: number[] = [];
-    for (let i = 1; i < prices.length; i += 1) returns.push(Math.log(prices[i] / prices[i - 1]));
-    if (returns.length < 6) return null;
-    const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
-    const variance = returns.reduce((a, b) => a + (b - mean) ** 2, 0) / returns.length;
-    const sigmaPerSample = Math.sqrt(variance);
+    const samples = history[selected].filter((s) => Number.isFinite(s.p) && s.p > 0);
+    // Require a real window before speaking; a handful of ticks cannot price an hour.
+    if (samples.length < 6) return null;
+    if (samples[samples.length - 1].t - samples[0].t < 60_000) return null;
     const strike = Number(asset.target_price_micros);
     const spot = Number(asset.reference_price_micros);
-    const tauSamples = Math.max(1, (asset.end_time_ms - now) / 1000); // ~1 reference sample per second
-    const sigmaTau = sigmaPerSample * Math.sqrt(tauSamples);
+    const tau = Math.max(1_000, asset.end_time_ms - now);
+    const sigmaTau = Math.sqrt(varianceRate(samples) * tau);
     if (!(spot > 0 && strike > 0 && sigmaTau > 0)) return null;
-    const pUp = normalCdf(Math.log(spot / strike) / sigmaTau);
+    // Clamp: the model should never claim near-certainty it cannot support.
+    const pUp = Math.min(0.99, Math.max(0.01, normalCdf(Math.log(spot / strike) / sigmaTau)));
     const upMid = (Number(asset.up_book.best_bid_micros) + Number(asset.up_book.best_ask_micros)) / 2 / 1_000_000;
     return { pUp, side: pUp >= 0.5 ? "UP" : "DOWN", confidence: Math.min(1, Math.abs(pUp - 0.5) * 2), edge: pUp - upMid };
   }, [asset, history, selected, now]);
@@ -733,6 +765,7 @@ export default function Terminal() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  const chartPoints = history[selected].map((sample) => sample.p);
   const pIdentity = (
       <Panel code="01" title="MARKET IDENTITY" className="watch-panel" action={<span>{ready ? "2 VALIDATED" : "0 AUTHORIZED"}</span>}>
         <div className="watch-head"><span>CONTRACT</span><span>REFERENCE</span><span>UP ASK</span></div>
@@ -745,7 +778,7 @@ export default function Terminal() {
   const pChart = (
       <Panel code="02" title={`${asset?.symbol ?? selected} / REFERENCE`} className="chart-panel" action={asset && <a className="market-link" href={`https://polymarket.com/event/${asset.event_slug}`} target="_blank" rel="noreferrer">OPEN MARKET ↗</a>}>
         <div className="quote-strip"><div><span>REFERENCE</span><strong>{decimal(asset?.reference_price_micros, 2)}</strong></div><div><span>HOUR TARGET</span><strong>{decimal(asset?.target_price_micros, 2)}</strong></div><div><span>UP BEST BID</span><strong>{decimal(asset?.up_book.best_bid_micros)}</strong></div><div><span>UP BEST ASK</span><strong>{decimal(asset?.up_book.best_ask_micros)}</strong></div><div><span>FEED AGE</span><strong>{asset ? `${asset.feed.age_ms}ms` : "UNAVAILABLE"}</strong></div></div>
-        <div className="chart"><LiveChart points={history[selected]} target={asset?.target_price_micros}/><div className="target-line"><span>VALIDATED HOURLY OPEN</span></div><div className="chart-x"><span>CLIENT HISTORY</span><span>RECEIVED VALUES ONLY</span><span>MAX 120 SAMPLES</span></div></div>
+        <div className="chart"><LiveChart points={chartPoints} target={asset?.target_price_micros}/><div className="target-line"><span>VALIDATED HOURLY OPEN</span></div><div className="chart-x"><span>CLIENT HISTORY</span><span>RECEIVED VALUES ONLY</span><span>MAX 120 SAMPLES</span></div></div>
         <div className="probability-band"><div className="prob-up" style={{ width: asset ? `${Number(BigInt(asset.up_book.best_ask_micros)) / 10_000}%` : "50%" }}><span>UP ASK</span><strong>{decimal(asset?.up_book.best_ask_micros)}</strong></div><div className="prob-down"><strong>{decimal(asset?.down_book.best_ask_micros)}</strong><span>DOWN ASK</span></div></div>
       </Panel>
   );

@@ -81,19 +81,39 @@ def load(paths: list[str]):
     return markets, series
 
 
+# See scripts/hourly_engine.py: 1s sampling of a round-printing index is
+# dominated by quantisation, so a naive estimate collapses toward zero and makes
+# the model absurdly confident near expiry. Sub-sample to a coarse spacing,
+# scale by real elapsed time, shrink toward a prior, and hard-floor the result.
+VOL_MIN_STEP_MS = 20_000
+VOL_PRIOR_HOURLY = 0.004
+VOL_PRIOR_RATE = (VOL_PRIOR_HOURLY ** 2) / HOUR_MS
+VOL_FULL_WEIGHT_MS = 20 * 60_000
+VOL_FLOOR_FRACTION = 0.25
+
+
 def variance_rate(series: list[tuple[int, float]]) -> float:
-    """Per-ms realized variance of log index returns (robust to uneven spacing)."""
+    """Per-ms realized variance of log index returns, de-noised and shrunk."""
     s = sorted(series)
+    picked: list[tuple[int, float]] = []
+    for point in s:
+        if not picked or point[0] - picked[-1][0] >= VOL_MIN_STEP_MS:
+            picked.append(point)
     num = 0.0
     den = 0.0
-    for (t0, s0), (t1, s1) in zip(s, s[1:]):
+    for (t0, s0), (t1, s1) in zip(picked, picked[1:]):
         dt = t1 - t0
         if dt <= 0 or s0 <= 0 or s1 <= 0:
             continue
         r = math.log(s1 / s0)
         num += r * r
         den += dt
-    return (num / den) if den > 0 else 0.0
+    if den <= 0:
+        return VOL_PRIOR_RATE
+    span = (s[-1][0] - s[0][0]) if len(s) > 1 else 0
+    weight = min(1.0, span / VOL_FULL_WEIGHT_MS)
+    blended = weight * (num / den) + (1 - weight) * VOL_PRIOR_RATE
+    return max(blended, VOL_PRIOR_RATE * VOL_FLOOR_FRACTION)
 
 
 def expiry_ms(t: int) -> int:
@@ -145,7 +165,8 @@ def evaluate(rows, decision_tau_min: float, threshold: float, walk_forward: bool
         S = pick["S"]
         if v > 0 and tau > 0 and S > 0 and strike > 0:
             sigma_tau = math.sqrt(v * tau)
-            p_up = phi(math.log(S / strike) / sigma_tau)
+            # Clamp: never claim near-certainty the estimate cannot support.
+            p_up = min(0.99, max(0.01, phi(math.log(S / strike) / sigma_tau)))
             up_mid = (pick["ua"] + pick["ub"]) / 2 / DOLLAR
             calib.append((p_up, up_mid, outcome_up))
             ua, da = pick["ua"] / DOLLAR, pick["da"] / DOLLAR
