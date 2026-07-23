@@ -117,8 +117,10 @@ function isBook(value: unknown): value is Book {
       : BigInt((level as Level).price_micros) >= BigInt((levels[index - 1] as Level).price_micros)));
   return typeof book.token_id === "string" && book.token_id.length > 0 &&
     typeof book.condition_id === "string" && book.condition_id.length > 0 &&
-    Number.isSafeInteger(book.source_timestamp_ms) && book.source_timestamp_ms >= 0 &&
-    Number.isSafeInteger(book.received_at_ms) && book.received_at_ms >= book.source_timestamp_ms &&
+    typeof book.source_timestamp_ms === "number" && Number.isSafeInteger(book.source_timestamp_ms) &&
+    book.source_timestamp_ms >= 0 &&
+    typeof book.received_at_ms === "number" && Number.isSafeInteger(book.received_at_ms) &&
+    book.received_at_ms >= book.source_timestamp_ms &&
     // The venue's book hash is opaque (fixtures and providers may use a
     // non-hex digest), so validate presence/size here and let the gateway
     // verify its semantics.
@@ -198,7 +200,7 @@ function quantity(micros?: string): string {
   return (Number(BigInt(micros) / 1_000n) / 1_000).toLocaleString(undefined, { maximumFractionDigits: 3 });
 }
 
-function short(value?: string): string {
+function short(value?: string | null): string {
   return value && value.length > 13 ? `${value.slice(0, 7)}…${value.slice(-5)}` : value || "UNAVAILABLE";
 }
 

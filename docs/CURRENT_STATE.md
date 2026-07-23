@@ -1,5 +1,8 @@
 # Current State
 
+> For a scannable phase-gate and per-crate status summary, see
+> [STATUS.md](STATUS.md). This document is the authoritative narrative.
+
 ## Milestone
 
 Phase 4.7 — terminal telemetry resilience, replay-verified partitioned research export, immutable runtime

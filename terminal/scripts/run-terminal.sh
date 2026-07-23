@@ -50,9 +50,9 @@ else
 fi
 
 cd "$terminal_root"
-vinext_bin="$terminal_root/node_modules/.bin/vinext"
-if [ ! -x "$vinext_bin" ]; then
+next_bin="$terminal_root/node_modules/.bin/next"
+if [ ! -x "$next_bin" ]; then
   echo "terminal dashboard dependencies are missing; run npm ci --prefix terminal" >&2
   exit 1
 fi
-WRANGLER_LOG_PATH=.wrangler/wrangler.log "$vinext_bin" dev
+"$next_bin" dev
