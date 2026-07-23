@@ -217,30 +217,88 @@ function parseUsdMicros(value: string): string {
   return micros.toString();
 }
 
-function PaperNeuralField({ status }: { status: PaperStatus | null }) {
+const NEURAL_TONES: Record<string, string> = { green: "#2de38e", amber: "#ffad18", red: "#ff5364", blue: "#628bff" };
+const NEURAL_LAYERS = [5, 7, 7, 3];
+
+// Animated neural-network graph: layered neurons with weighted connections and
+// signal pulses flowing input -> output. It is a live visualisation of the
+// decision pipeline (feeds -> projection -> strategy -> decision), tinted by the
+// current system tone and busier while a paper session is active.
+function NeuralGraph({ active, tone }: { active: boolean; tone: string }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     const node = canvas.current;
     if (!node) return;
+    const ctx = node.getContext("2d");
+    if (!ctx) return;
+    const layers = NEURAL_LAYERS;
     const ratio = window.devicePixelRatio || 1;
-    const width = node.clientWidth || 420;
-    const height = node.clientHeight || 84;
-    node.width = width * ratio; node.height = height * ratio;
-    const ctx = node.getContext("2d"); if (!ctx) return;
-    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-    ctx.clearRect(0, 0, width, height);
-    const nodes = 16;
-    const phase = (status?.events_recorded ?? 0) * 0.09;
-    const points = Array.from({ length: nodes }, (_, index) => ({ x: 12 + index * (width - 24) / (nodes - 1), y: height / 2 + Math.sin(index * 1.7 + phase) * (height * 0.27) }));
-    ctx.lineWidth = 1;
-    points.forEach((point, index) => {
-      if (index === 0) return;
-      ctx.strokeStyle = index % 3 === 0 ? "rgba(255,173,24,.42)" : "rgba(57,199,255,.30)";
-      ctx.beginPath(); ctx.moveTo(points[index - 1].x, points[index - 1].y); ctx.lineTo(point.x, point.y); ctx.stroke();
+    const accent = NEURAL_TONES[tone] ?? NEURAL_TONES.blue;
+    // Stable connection weights for this mount.
+    const weights = layers.slice(0, -1).map((count, li) =>
+      Array.from({ length: count }, () => Array.from({ length: layers[li + 1] }, () => 0.12 + Math.random() * 0.88)));
+    const spawn = () => ({ layer: 0, from: (Math.random() * layers[0]) | 0, to: (Math.random() * layers[1]) | 0, t: Math.random(), speed: (active ? 0.014 : 0.008) + Math.random() * 0.012 });
+    const pulses = Array.from({ length: active ? 22 : 11 }, spawn);
+    let frame = 0;
+    let raf = 0;
+    const nodesAt = (w: number, h: number) => layers.map((count, li) => {
+      const x = 20 + li * (w - 40) / (layers.length - 1);
+      return Array.from({ length: count }, (_, ni) => ({ x, y: (h / (count + 1)) * (ni + 1) }));
     });
-    points.forEach((point, index) => { ctx.fillStyle = index % 3 === 0 ? "#ffad18" : "#39c7ff"; ctx.beginPath(); ctx.arc(point.x, point.y, index % 3 === 0 ? 3 : 2, 0, Math.PI * 2); ctx.fill(); });
-  }, [status]);
-  return <canvas className="neural-field" ref={canvas} role="img" aria-label="Paper strategy decision telemetry field" />;
+    const draw = () => {
+      frame += 1;
+      const w = node.clientWidth || 420;
+      const h = node.clientHeight || 170;
+      if (node.width !== Math.floor(w * ratio)) { node.width = Math.floor(w * ratio); node.height = Math.floor(h * ratio); }
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      ctx.clearRect(0, 0, w, h);
+      const nodes = nodesAt(w, h);
+      // connections
+      ctx.lineWidth = 1;
+      for (let li = 0; li < nodes.length - 1; li += 1)
+        for (let a = 0; a < nodes[li].length; a += 1)
+          for (let b = 0; b < nodes[li + 1].length; b += 1) {
+            ctx.strokeStyle = `rgba(57,199,255,${0.03 + weights[li][a][b] * 0.09})`;
+            ctx.beginPath(); ctx.moveTo(nodes[li][a].x, nodes[li][a].y); ctx.lineTo(nodes[li + 1][b].x, nodes[li + 1][b].y); ctx.stroke();
+          }
+      // signal pulses
+      for (const p of pulses) {
+        p.t += p.speed;
+        if (p.t >= 1) {
+          if (p.layer < nodes.length - 2) { p.layer += 1; p.from = p.to; p.to = (Math.random() * layers[p.layer + 1]) | 0; p.t = 0; }
+          else Object.assign(p, spawn());
+          continue;
+        }
+        const A = nodes[p.layer][p.from];
+        const B = nodes[p.layer + 1][p.to];
+        const x = A.x + (B.x - A.x) * p.t;
+        const y = A.y + (B.y - A.y) * p.t;
+        const halo = ctx.createRadialGradient(x, y, 0, x, y, 7);
+        halo.addColorStop(0, accent); halo.addColorStop(1, "transparent");
+        ctx.fillStyle = halo; ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = "#f4fbff"; ctx.beginPath(); ctx.arc(x, y, 1.5, 0, Math.PI * 2); ctx.fill();
+      }
+      // neurons
+      for (let li = 0; li < nodes.length; li += 1)
+        for (let ni = 0; ni < nodes[li].length; ni += 1) {
+          const n = nodes[li][ni];
+          const beat = 0.5 + 0.5 * Math.sin(frame * 0.05 + li * 0.8 + ni);
+          const io = li === 0 || li === nodes.length - 1;
+          const color = io ? accent : "#39c7ff";
+          const r = (io ? 3.2 : 2.4) + beat * 1.5;
+          const glow = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, r * 3.2);
+          glow.addColorStop(0, color); glow.addColorStop(1, "transparent");
+          ctx.globalAlpha = 0.18 + beat * 0.32; ctx.fillStyle = glow;
+          ctx.beginPath(); ctx.arc(n.x, n.y, r * 3.2, 0, Math.PI * 2); ctx.fill();
+          ctx.globalAlpha = 1; ctx.fillStyle = color;
+          ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, Math.PI * 2); ctx.fill();
+        }
+      raf = requestAnimationFrame(draw);
+    };
+    draw();
+    return () => cancelAnimationFrame(raf);
+  }, [active, tone]);
+  return <canvas className="neural-graph" ref={canvas} role="img" aria-label="Decision-pipeline neural graph" />;
 }
 
 function Panel({ code, title, action, children, className = "" }: {
@@ -629,7 +687,7 @@ export default function Terminal() {
     <section className="paper-section" aria-label="Paper campaign telemetry">
       <div className="paper-section-head"><div><span className="panel-code">P1</span><h2>CAMPAIGN TELEMETRY / TRADES</h2></div><span>{paper?.session_id ?? "NO SESSION"} · {paper?.events_recorded ?? 0} EVENTS</span></div>
       <div className="paper-section-grid">
-        <div className="paper-neural"><div className="section-label">DECISION / EVIDENCE FIELD <span>TELEMETRY ONLY</span></div><PaperNeuralField status={paper}/><div className="paper-metrics"><span>AVAILABLE CASH <b>{usd(paper?.available_cash_micros)}</b></span><span>UNREALIZED <b>{signedUsd(paper?.unrealized_pnl_micros)}</b></span><span>MAX DRAWDOWN <b>{usd(paper?.max_drawdown_micros)}</b></span><span>CVaR <b>{usd(paper?.cvar_micros)}</b></span><span>HEDGE FAILURES <b>{paper?.hedge_failures ?? "—"}</b></span><span>FILL RATE <b>{paper ? `${(paper.fill_rate_bps / 100).toFixed(2)}%` : "—"}</b></span><span>DATA COVERAGE <b>{paper ? `${(paper.data_coverage_bps / 100).toFixed(2)}%` : "—"}</b></span><span>CHECKPOINTS <b>{paper?.checkpoints ?? "—"}</b></span></div></div>
+        <div className="paper-neural"><div className="section-label">DECISION / EVIDENCE FIELD <span>TELEMETRY ONLY</span></div><div className="neural-wrap"><NeuralGraph active={paper?.active ?? false} tone={statusTone}/><div className="neural-legend"><span>FEEDS</span><span>PROJECTION</span><span>STRATEGY</span><span>DECISION</span></div></div><div className="paper-metrics"><span>AVAILABLE CASH <b>{usd(paper?.available_cash_micros)}</b></span><span>UNREALIZED <b>{signedUsd(paper?.unrealized_pnl_micros)}</b></span><span>MAX DRAWDOWN <b>{usd(paper?.max_drawdown_micros)}</b></span><span>CVaR <b>{usd(paper?.cvar_micros)}</b></span><span>HEDGE FAILURES <b>{paper?.hedge_failures ?? "—"}</b></span><span>FILL RATE <b>{paper ? `${(paper.fill_rate_bps / 100).toFixed(2)}%` : "—"}</b></span><span>DATA COVERAGE <b>{paper ? `${(paper.data_coverage_bps / 100).toFixed(2)}%` : "—"}</b></span><span>CHECKPOINTS <b>{paper?.checkpoints ?? "—"}</b></span></div></div>
         <div className="paper-contracts"><div className="section-label">CONTRACT ACTIVITY <span>SEPARATE STREAMS</span></div>{paper?.contracts.length ? paper.contracts.map((contract) => <div className="contract-row" key={contract.asset}><strong>{contract.asset}</strong><span>{contract.last_decision}</span><span>{contract.observations} OBS</span><b>{signedDecimal(contract.realized_pnl_micros)}</b></div>) : <div className="paper-empty">START A PAPER SESSION TO RECORD BTC + ETH</div>}</div>
         <div className="paper-trades"><div className="section-label">SIMULATED TRADES <span>{paper?.trades.length ?? 0} RECENT</span></div>{paper?.trades.length ? <div className="trade-table">{paper.trades.slice().reverse().slice(0, 12).map((trade) => <div className="trade-row" key={trade.trade_id}><b>{trade.asset}</b><span>{trade.state}</span><span>{quantity(trade.quantity_micros)} pair</span><span>{decimal(trade.cost_micros)}</span><strong>{signedDecimal(trade.locked_pnl_micros)}</strong></div>)}</div> : <div className="paper-empty">NO FILLS — CONSERVATIVE NO_TRADE IS VALID</div>}</div>
       </div>
