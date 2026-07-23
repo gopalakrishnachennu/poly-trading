@@ -1,0 +1,29 @@
+[package]
+name = "strategy-proposal"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+accounting-ledger = { path = "../accounting-ledger" }
+blake3.workspace = true
+event-schema = { path = "../event-schema" }
+market-recorder = { path = "../market-recorder" }
+market-session = { path = "../market-session" }
+portfolio-risk = { path = "../portfolio-risk" }
+public-market-data = { path = "../public-market-data" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+common-types = { path = "../common-types" }
+feed-supervisor = { path = "../feed-supervisor" }
+live-market-state = { path = "../live-market-state" }
+proptest.workspace = true
+reference-market-data = { path = "../reference-market-data" }
+tempfile.workspace = true
+
+[lints]
+workspace = true

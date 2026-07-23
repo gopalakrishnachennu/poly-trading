@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "policy_id": "paper-btc-eth-v1",
+  "issued_at_ms": 0,
+  "expires_at_ms": 4102444800000,
+  "campaign_duration_ms": 604800000,
+  "assets": {
+    "BTC": {
+      "fee_micros": "1000",
+      "slippage_micros": "500",
+      "minimum_locked_edge_micros": "1000",
+      "maximum_pair_quantity_micros": "100000000"
+    },
+    "ETH": {
+      "fee_micros": "1000",
+      "slippage_micros": "500",
+      "minimum_locked_edge_micros": "1000",
+      "maximum_pair_quantity_micros": "100000000"
+    }
+  }
+}

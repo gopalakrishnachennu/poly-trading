@@ -1,0 +1,207 @@
+services:
+  terminal-api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    environment:
+      POLY_TERMINAL_BIND: "0.0.0.0"
+      POLY_TERMINAL_PORT: "8088"
+      POLY_TERMINAL_MODE: "READ_ONLY"
+      POLY_TERMINAL_NO_TRADE: "true"
+    ports:
+      - "127.0.0.1:8088:8088"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8088/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  dashboard:
+    build:
+      context: ../terminal
+      dockerfile: ../deploy/Dockerfile.dashboard
+      args:
+        NEXT_PUBLIC_TERMINAL_API_URL: "http://localhost:8088"
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      terminal-api:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.53.5
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=24h"]
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+    ports:
+      - "127.0.0.1:9090:9090"
+    depends_on:
+      terminal-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.2.2
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "127.0.0.1:3001:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  # Optional local durable-service fixture. These services are deliberately
+  # behind a profile so the default dashboard remains lightweight. They use
+  # unauthenticated, loopback-only development endpoints and must never be
+  # used for production data. No API credentials or trading capability is
+  # exposed by this profile.
+  postgres:
+    profiles: [durable]
+    image: postgres:16.4-alpine
+    environment:
+      POSTGRES_DB: poly_terminal
+      POSTGRES_USER: poly_terminal
+      POSTGRES_HOST_AUTH_METHOD: trust
+      POLY_TERMINAL_MODE: READ_ONLY
+      POLY_TERMINAL_NO_TRADE: "true"
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - staging-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U poly_terminal -d poly_terminal"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  redpanda:
+    profiles: [durable]
+    image: redpandadata/redpanda:v24.2.7
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp=1
+      - --memory=512M
+      - --reserve-memory=0M
+      - --check=false
+      - --node-id=0
+      - --kafka-addr=internal://0.0.0.0:9092
+      - --advertise-kafka-addr=internal://redpanda:9092
+    ports:
+      - "127.0.0.1:19092:9092"
+    volumes:
+      - staging-redpanda:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health --api-urls localhost:9644 | grep -q Healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  clickhouse:
+    profiles: [durable]
+    image: clickhouse/clickhouse-server:24.8-alpine
+    environment:
+      CLICKHOUSE_DB: poly_terminal
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+      POLY_TERMINAL_MODE: READ_ONLY
+      POLY_TERMINAL_NO_TRADE: "true"
+    ports:
+      - "127.0.0.1:8123:8123"
+      - "127.0.0.1:9000:9000"
+    volumes:
+      - staging-clickhouse:/var/lib/clickhouse
+      - staging-clickhouse-logs:/var/log/clickhouse-server
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --query 'SELECT 1' >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  # Free, self-hosted S3-compatible archive fixture. Credentials are supplied
+  # at launch through the operator environment; no credential is committed.
+  # This is a disposable local archive only and is not a production object
+  # store or a trading authority.
+  minio:
+    profiles: [durable]
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:-CHANGE_ME_MINIO_USER}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-CHANGE_ME_MINIO_PASSWORD}"
+      MINIO_BUCKET: "${MINIO_BUCKET:-poly-terminal-archive}"
+      POLY_TERMINAL_MODE: READ_ONLY
+      POLY_TERMINAL_NO_TRADE: "true"
+    ports:
+      - "127.0.0.1:9002:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - staging-minio:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  # Optional Vault Community Edition fixture. This is an in-memory development
+  # server only: it deliberately has no preloaded token, no persistent volume,
+  # and is never used by the API. Do not expose it beyond loopback.
+  vault:
+    profiles: [security]
+    image: hashicorp/vault:1.17.6
+    command:
+      - server
+      - -dev
+      - -dev-listen-address=0.0.0.0:8200
+      - -dev-no-store-token
+    environment:
+      VAULT_ADDR: http://127.0.0.1:8200
+      VAULT_API_ADDR: http://127.0.0.1:8200
+      VAULT_LOG_LEVEL: warn
+    ports:
+      - "127.0.0.1:8200:8200"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    healthcheck:
+      test: ["CMD", "vault", "status", "-address=http://127.0.0.1:8200"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+volumes:
+  staging-postgres:
+  staging-redpanda:
+  staging-clickhouse:
+  staging-clickhouse-logs:
+  staging-minio:

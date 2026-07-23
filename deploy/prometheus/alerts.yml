@@ -1,0 +1,20 @@
+groups:
+  - name: terminal-read-only
+    rules:
+      - alert: TerminalProjectionPollFailures
+        expr: increase(poly_terminal_poll_failure_total[5m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Terminal projection polling is failing
+          description: The read-only gateway has reported upstream polling failures for at least two minutes.
+
+      - alert: TerminalProjectionStale
+        expr: time() * 1000 - poly_terminal_last_success_timestamp_ms > 30000
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Terminal projection is stale
+          description: No successful projection refresh has been observed for more than 30 seconds; NO_TRADE must remain enforced.

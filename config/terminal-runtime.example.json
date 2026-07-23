@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "config_id": "terminal-paper-runtime-v1",
+  "issued_at_ms": 0,
+  "expires_at_ms": 4102444800000,
+  "sources": {
+    "gamma_keyset_url": "https://gamma-api.polymarket.com/events/keyset",
+    "clob_book_url": "https://clob.polymarket.com/book",
+    "reference_api_url": "https://data-api.binance.vision/api/v3"
+  },
+  "polling": {
+    "http_timeout_ms": 5000,
+    "refresh_interval_ms": 1000,
+    "discovery_refresh_ms": 15000,
+    "discovery_lookback_ms": 300000,
+    "discovery_lookahead_ms": 4200000,
+    "maximum_response_bytes": 2097152
+  },
+  "projection": {
+    "maximum_book_age_ms": 5000,
+    "maximum_reference_age_ms": 5000,
+    "maximum_cross_book_skew_ms": 2000,
+    "maximum_projection_age_ms": 5000
+  },
+  "client_display": {
+    "poll_interval_ms": 1000,
+    "request_timeout_ms": 3500,
+    "maximum_client_age_ms": 7000,
+    "maximum_future_skew_ms": 1500
+  }
+}

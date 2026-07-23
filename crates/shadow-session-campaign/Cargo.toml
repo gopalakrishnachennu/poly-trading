@@ -1,0 +1,27 @@
+[package]
+name = "shadow-session-campaign"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+blake3.workspace = true
+event-schema = { path = "../event-schema" }
+market-recorder = { path = "../market-recorder" }
+serde.workspace = true
+serde_json.workspace = true
+settlement-reconciliation = { path = "../settlement-reconciliation" }
+shadow-adapter-certification = { path = "../shadow-adapter-certification" }
+shadow-gateway-harness = { path = "../shadow-gateway-harness" }
+thiserror.workspace = true
+unified-paired-trading-runtime = { path = "../unified-paired-trading-runtime" }
+
+[dev-dependencies]
+accounting-ledger = { path = "../accounting-ledger" }
+order-intent-policy = { path = "../order-intent-policy" }
+proptest.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

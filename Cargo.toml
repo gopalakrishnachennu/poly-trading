@@ -1,0 +1,99 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/common-types",
+    "crates/event-schema",
+    "crates/live-market-state",
+    "crates/market-recorder",
+    "crates/paper-campaign-schema",
+    "crates/model-governance",
+    "crates/paper-learning-dataset",
+    "crates/order-book-replay",
+    "crates/public-market-data",
+    "crates/reference-market-data",
+    "crates/resolution-rules",
+    "crates/feed-supervisor",
+    "crates/market-session",
+    "crates/session-runtime",
+    "crates/integration-daemon",
+    "crates/shadow-ops",
+    "crates/accounting-ledger",
+    "crates/settlement-reconciliation",
+    "crates/portfolio-risk",
+    "crates/order-intent-policy",
+    "crates/paper-execution",
+    "crates/paper-trading-runtime",
+    "crates/strategy-proposal",
+    "crates/complete-set-arbitrage",
+    "crates/paired-opportunity-runtime",
+    "crates/paired-capital-staging",
+    "crates/paired-placement-policy",
+    "crates/paired-paper-execution",
+    "crates/paired-settlement-runtime",
+    "crates/ctf-transaction-runtime",
+    "crates/unified-paired-trading-runtime",
+    "crates/shadow-adapter-certification",
+    "crates/shadow-gateway-harness",
+    "crates/shadow-session-campaign",
+    "crates/promotion-governance",
+    "crates/canary-rollout-simulator",
+    "crates/fleet-rollout-governance",
+    "crates/deployment-preflight",
+    "crates/deployment-orchestration-simulator",
+    "crates/deployment-adapter-certification",
+    "crates/deployment-change-control",
+    "crates/deployment-change-campaign",
+    "crates/production-change-readiness",
+    "crates/deployment-execution-intent",
+    "crates/executor-session-simulator",
+    "crates/transport-adapter-certification",
+    "crates/credential-broker-simulator",
+    "crates/submission-gateway-certification",
+    "crates/shadow-auth-session",
+    "crates/credential-provider-certification",
+    "crates/durable-infrastructure",
+    "crates/security-boundary",
+    "crates/read-only-venue",
+    "crates/chain-observer",
+    "crates/continuous-shadow-certification",
+    "crates/live-data-paper-certification",
+    "crates/authenticated-no-submit",
+    "crates/micro-capital-canary-controller",
+    "crates/controlled-production-release",
+    "crates/terminal-projection",
+]
+
+[workspace.package]
+edition = "2021"
+license = "Proprietary"
+rust-version = "1.88"
+
+[workspace.dependencies]
+axum = "0.8"
+arrow-array = "56.2"
+arrow-schema = "56.2"
+crc32fast = "1.4"
+blake3 = "1.8"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+futures-util = "0.3"
+proptest = "1.7"
+reqwest = { version = "0.12", default-features = false, features = ["http2", "rustls-tls", "stream"] }
+parquet = { version = "56.2", default-features = false, features = ["arrow"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3.20"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+url = "2"
+webpki-roots = "1"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }

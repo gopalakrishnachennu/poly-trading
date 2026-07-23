@@ -1,0 +1,16 @@
+FROM rust:1.88-bookworm AS build
+WORKDIR /src
+COPY Cargo.toml Cargo.lock .
+COPY crates ./crates
+RUN cargo build --locked --release -p terminal-projection
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates wget \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --no-create-home terminal
+COPY --from=build /src/target/release/terminal-projection /usr/local/bin/terminal-projection
+USER 10001:10001
+ENV POLY_TERMINAL_BIND=0.0.0.0 POLY_TERMINAL_PORT=8088 POLY_TERMINAL_MODE=READ_ONLY POLY_TERMINAL_NO_TRADE=true
+EXPOSE 8088
+ENTRYPOINT ["/usr/local/bin/terminal-projection"]

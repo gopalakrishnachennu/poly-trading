@@ -1,0 +1,189 @@
+name: verify
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --component clippy,rustfmt
+          rustup default 1.88.0
+      - name: Formatting
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --workspace --locked
+
+  tla:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Download pinned TLC
+        run: |
+          curl --fail --location --silent --show-error \
+            --output /tmp/tla2tools.jar \
+            https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar
+          echo "58d44845a37a8d776deaf8cf3a623213b59d311bc0ec287bcdfbe148dd11bb3d  /tmp/tla2tools.jar" \
+            | sha256sum --check --strict
+      - name: Check capital-reservation model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config CapitalReservation.cfg CapitalReservation.tla
+      - name: Check cross-feed supervisor model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config FeedSupervisor.cfg FeedSupervisor.tla
+      - name: Check hourly market-session model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config MarketSession.cfg MarketSession.tla
+      - name: Check durable session-runtime model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config SessionRuntime.cfg SessionRuntime.tla
+      - name: Check read-only integration-soak model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config IntegrationSoak.cfg IntegrationSoak.tla
+      - name: Check shadow-operations lifecycle model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config ShadowOperations.cfg ShadowOperations.tla
+      - name: Check deterministic accounting-ledger model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config AccountingLedger.cfg AccountingLedger.tla
+      - name: Check settlement-reconciliation model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config SettlementReconciliation.cfg SettlementReconciliation.tla
+      - name: Check portfolio-risk authority model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config PortfolioRisk.cfg PortfolioRisk.tla
+      - name: Check order-intent policy model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config OrderIntentPolicy.cfg OrderIntentPolicy.tla
+      - name: Check paper-execution lifecycle model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config PaperExecution.cfg PaperExecution.tla
+      - name: Check composed paper-trading runtime model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config PaperTradingRuntime.cfg PaperTradingRuntime.tla
+      - name: Check strategy-proposal boundary model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config StrategyProposal.cfg StrategyProposal.tla
+      - name: Check complete-set arbitrage detector model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config CompleteSetArbitrage.cfg CompleteSetArbitrage.tla
+      - name: Check paired-opportunity runtime model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config PairedOpportunityRuntime.cfg PairedOpportunityRuntime.tla
+      - name: Check paired capital-staging model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config PairedCapitalStaging.cfg PairedCapitalStaging.tla
+      - name: Check paired placement-policy model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config PairedPlacementPolicy.cfg PairedPlacementPolicy.tla
+      - name: Check paired paper-execution model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config PairedPaperExecution.cfg PairedPaperExecution.tla
+      - name: Check paired settlement-runtime model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config PairedSettlementRuntime.cfg PairedSettlementRuntime.tla
+      - name: Check CTF transaction-runtime model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config CtfTransactionRuntime.cfg CtfTransactionRuntime.tla
+      - name: Check unified paired-trading runtime model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config UnifiedPairedTradingRuntime.cfg UnifiedPairedTradingRuntime.tla
+      - name: Check shadow-adapter certification model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config ShadowAdapterCertification.cfg ShadowAdapterCertification.tla
+      - name: Check shadow-gateway harness model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config ShadowGatewayHarness.cfg ShadowGatewayHarness.tla
+      - name: Check shadow-session campaign model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config ShadowSessionCampaign.cfg ShadowSessionCampaign.tla
+      - name: Check offline promotion-governance model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config PromotionGovernance.cfg PromotionGovernance.tla
+      - name: Check offline canary-rollout simulator model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config CanaryRolloutSimulator.cfg CanaryRolloutSimulator.tla
+      - name: Check offline fleet-rollout governance model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config FleetRolloutGovernance.cfg FleetRolloutGovernance.tla
+      - name: Check offline deployment-preflight model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config DeploymentPreflight.cfg DeploymentPreflight.tla
+      - name: Check offline deployment-orchestration simulator model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config DeploymentOrchestrationSimulator.cfg DeploymentOrchestrationSimulator.tla
+      - name: Check offline deployment-adapter certification model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config DeploymentAdapterCertification.cfg DeploymentAdapterCertification.tla
+      - name: Check offline deployment change-control model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config DeploymentChangeControl.cfg DeploymentChangeControl.tla
+      - name: Check offline deployment change-campaign model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config DeploymentChangeCampaign.cfg DeploymentChangeCampaign.tla
+      - name: Check offline production-change readiness model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config ProductionChangeReadiness.cfg ProductionChangeReadiness.tla
+      - name: Check offline deployment execution-intent model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config DeploymentExecutionIntent.cfg DeploymentExecutionIntent.tla
+      - name: Check offline executor-session simulator model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config ExecutorSessionSimulator.cfg ExecutorSessionSimulator.tla
+      - name: Check offline transport-adapter certification model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config TransportAdapterCertification.cfg TransportAdapterCertification.tla
+      - name: Check offline credential-broker simulator model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config CredentialBrokerSimulator.cfg CredentialBrokerSimulator.tla
+      - name: Check offline submission-gateway certification model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config SubmissionGatewayCertification.cfg SubmissionGatewayCertification.tla
+      - name: Check offline shadow authenticated-session model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config ShadowAuthSession.cfg ShadowAuthSession.tla
+      - name: Check offline credential-provider certification model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config CredentialProviderCertification.cfg CredentialProviderCertification.tla
+      - name: Check durable-infrastructure model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config DurableInfrastructure.cfg DurableInfrastructure.tla
+      - name: Check production-security boundary model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config SecurityBoundary.cfg SecurityBoundary.tla
+      - name: Check read-only venue model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config ReadOnlyVenue.cfg ReadOnlyVenue.tla
+      - name: Check chain and wallet observer model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config ChainObserver.cfg ChainObserver.tla
+      - name: Check continuous shadow campaign model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config ContinuousShadowCampaign.cfg ContinuousShadowCampaign.tla
+      - name: Check live-data paper certification model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config LiveDataPaperCertification.cfg LiveDataPaperCertification.tla
+      - name: Check authenticated no-submit model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config AuthenticatedNoSubmit.cfg AuthenticatedNoSubmit.tla
+      - name: Check micro-capital canary controls model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config MicroCapitalCanary.cfg MicroCapitalCanary.tla
+      - name: Check controlled-production release model
+        working-directory: formal
+        run: java -cp /tmp/tla2tools.jar tlc2.TLC -config ControlledProductionRelease.cfg ControlledProductionRelease.tla
