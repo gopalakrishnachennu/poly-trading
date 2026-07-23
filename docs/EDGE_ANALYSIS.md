@@ -122,15 +122,45 @@ skill the market mid does not already have** (near-identical Brier). That is
 exactly what a too-small, single-regime sample produces, and it is why more data
 — not more modelling — is the next requirement.
 
+## Capture toolkit (the gating item is now turnkey)
+
+The blocker is data quantity, so accumulating it is made unattended and
+disk-sustainable. Instead of the raw tick journals (~1 GB per 5 h), a compact
+recorder polls the already-validated gateway snapshot and writes ~2–3 MB/day:
+
+```bash
+# 1. Capture, unattended, for as long as you like (auto-restart + daily rotation).
+scripts/run-continuous-capture.sh
+
+# 2. Check how many resolved markets have accumulated.
+python3 scripts/capture_progress.py
+
+# 3. When there are enough (~200 for a first read, ~500 for a firmer one),
+#    evaluate the model out-of-sample with a sensitivity grid.
+python3 scripts/backtest_fair_value.py --glob 'var/research-capture/*.jsonl' \
+    --walk-forward --sweep
+```
+
+- `scripts/capture_snapshots.py` — polls `GET /api/v1/terminal/snapshot` at a
+  low rate and appends observation records (the same schema the paper journals
+  use) to `var/research-capture/snapshots-<UTC-day>.jsonl`. It records only
+  `ready` frames, so `NO_TRADE`/stale states are never stored as data.
+- `scripts/run-continuous-capture.sh` — supervises the gateway + recorder with
+  exponential-backoff restart, a status heartbeat, and logs under `var/log/`.
+- `scripts/capture_progress.py` — reports distinct resolved markets by asset and
+  day with a readiness gauge.
+
+Walk-forward already changes the tiny-sample story: the one out-of-sample trade
+at the default settings *loses*, and a `--sweep` over decision-time × threshold
+shows P&L flipping sign with no stable pattern — i.e. noise, exactly as expected
+at this N.
+
 ## Recommended next steps
 
-1. **Widen the capture first — this is the gating item.** Run the read-only
-   tick capture continuously for weeks across calm *and* volatile regimes to
-   accumulate hundreds+ of resolved hourly markets. The analysis tooling
-   (`analyze_paper_edge.py`, `backtest_fair_value.py`) is ready to consume it.
-2. **Then re-run the backtest** and judge the model on Brier/hit-rate/P&L
-   against the market mid with enough markets for the numbers to mean something,
-   walking forward so volatility is always estimated out-of-sample.
+1. **Run the capture (above) for weeks across calm *and* volatile regimes.**
+   This is the gating item; the tooling is now turnkey.
+2. **Re-run the walk-forward backtest** once `capture_progress.py` clears ~500
+   markets, and judge the model on Brier/hit-rate/P&L against the market mid.
 3. **Only then** decide whether the economically viable strategy is directional,
    maker-based, or dislocation-triggered — and point the (excellent) safety
    stack at whichever one the evidence supports.

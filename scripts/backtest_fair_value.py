@@ -100,57 +100,77 @@ def expiry_ms(t: int) -> int:
     return (t // HOUR_MS + 1) * HOUR_MS
 
 
-def backtest(paths: list[str], decision_tau_min: float, threshold: float,
-             min_span_min: float) -> None:
-    markets, series = load(paths)
-    vrate = {a: variance_rate(s) for a, s in series.items()}
-
-    print("# Directional fair-value backtest\n")
-    print("Per-asset index volatility (annualization-free):")
-    for a in sorted(vrate):
-        sig_hr = math.sqrt(vrate[a] * HOUR_MS)
-        print(f"  {a}: sigma(1h) = {sig_hr * 100:.3f}%  of price")
-    print()
-
-    trades = []
-    calib = []  # (model_p_up, market_mid_up, outcome_up)
-    usable = 0
-    for (asset, cond), obs in sorted(markets.items()):
+def build_markets(paths: list[str], min_span_min: float):
+    """Return chronologically-ordered usable markets with derived fields."""
+    markets, _ = load(paths)
+    rows = []
+    for (asset, cond), obs in markets.items():
         obs.sort(key=lambda o: o["t"])
         span_min = (obs[-1]["t"] - obs[0]["t"]) / 60000
         if span_min < min_span_min:
             continue  # skip stub markets with almost no life
-        usable += 1
         strike = statistics.mode([o["K"] for o in obs])
         close = obs[-1]["S"]
-        outcome_up = 1 if close >= strike else 0
-        v = vrate.get(asset, 0.0)
+        rows.append({
+            "asset": asset, "cond": cond, "obs": obs,
+            "strike": strike, "outcome_up": 1 if close >= strike else 0,
+            "start": obs[0]["t"],
+        })
+    rows.sort(key=lambda r: r["start"])  # chronological for walk-forward
+    return rows
 
-        # Decision point: the observation closest to `decision_tau_min` remaining.
-        target_tau = decision_tau_min * 60000
-        pick = min(obs, key=lambda o: abs((expiry_ms(o["t"]) - o["t"]) - target_tau))
+
+def evaluate(rows, decision_tau_min: float, threshold: float, walk_forward: bool):
+    """Return (calib, trades). Volatility is estimated out-of-sample when
+    walk_forward is set: only index samples from strictly earlier markets feed
+    the per-asset variance-rate estimate for each market."""
+    prior_series: dict[str, list] = defaultdict(list)
+    full_rate = {}
+    if not walk_forward:
+        agg: dict[str, list] = defaultdict(list)
+        for r in rows:
+            agg[r["asset"]].extend((o["t"], o["S"]) for o in r["obs"])
+        full_rate = {a: variance_rate(s) for a, s in agg.items()}
+
+    calib, trades = [], []
+    for r in rows:
+        asset, strike, outcome_up = r["asset"], r["strike"], r["outcome_up"]
+        if walk_forward:
+            v = variance_rate(prior_series[asset]) if prior_series[asset] else 0.0
+        else:
+            v = full_rate.get(asset, 0.0)
+
+        pick = min(r["obs"], key=lambda o: abs((expiry_ms(o["t"]) - o["t"]) - decision_tau_min * 60000))
         tau = expiry_ms(pick["t"]) - pick["t"]
         S = pick["S"]
-        if v <= 0 or tau <= 0 or S <= 0 or strike <= 0:
-            continue
-        sigma_tau = math.sqrt(v * tau)
-        p_up = phi(math.log(S / strike) / sigma_tau) if sigma_tau > 0 else (1.0 if S >= strike else 0.0)
+        if v > 0 and tau > 0 and S > 0 and strike > 0:
+            sigma_tau = math.sqrt(v * tau)
+            p_up = phi(math.log(S / strike) / sigma_tau)
+            up_mid = (pick["ua"] + pick["ub"]) / 2 / DOLLAR
+            calib.append((p_up, up_mid, outcome_up))
+            ua, da = pick["ua"] / DOLLAR, pick["da"] / DOLLAR
+            p_down = 1 - p_up
+            if p_up - ua > threshold and (p_up - ua) >= (p_down - da):
+                trades.append((asset, r["cond"][:10], "BUY_UP", round(p_up, 3),
+                               round(up_mid, 3), outcome_up, round(outcome_up - ua, 4)))
+            elif p_down - da > threshold:
+                trades.append((asset, r["cond"][:10], "BUY_DOWN", round(p_up, 3),
+                               round(up_mid, 3), outcome_up, round((1 - outcome_up) - da, 4)))
 
-        up_mid = (pick["ua"] + pick["ub"]) / 2 / DOLLAR
-        calib.append((p_up, up_mid, outcome_up))
+        # This market's ticks become training data for later markets.
+        prior_series[asset].extend((o["t"], o["S"]) for o in r["obs"])
+    return calib, trades
 
-        # Taker decision: buy the leg the model thinks is underpriced at its ask.
-        ua, da = pick["ua"] / DOLLAR, pick["da"] / DOLLAR
-        p_down = 1 - p_up
-        action, pnl = None, 0.0
-        if p_up - ua > threshold and (p_up - ua) >= (p_down - da):
-            action, pnl = "BUY_UP", (outcome_up - ua)
-        elif p_down - da > threshold:
-            action, pnl = "BUY_DOWN", ((1 - outcome_up) - da)
-        if action:
-            trades.append((asset, cond[:10], action, round(p_up, 3), round(up_mid, 3),
-                           outcome_up, round(pnl, 4)))
 
+def backtest(paths: list[str], decision_tau_min: float, threshold: float,
+             min_span_min: float, walk_forward: bool) -> None:
+    rows = build_markets(paths, min_span_min)
+    usable = len(rows)
+
+    print("# Directional fair-value backtest\n")
+    mode = "walk-forward (out-of-sample volatility)" if walk_forward else "in-sample volatility"
+    print(f"Volatility mode: {mode}")
+    calib, trades = evaluate(rows, decision_tau_min, threshold, walk_forward)
     print(f"Usable markets (span >= {min_span_min:.0f} min): {usable}")
     print(f"Decision point: ~{decision_tau_min:.0f} min to expiry, taker threshold {threshold:.3f}\n")
 
@@ -182,10 +202,34 @@ def backtest(paths: list[str], decision_tau_min: float, threshold: float,
         print("  No trades cleared the threshold.")
     print()
     print("## Statistical power")
-    print(f"  Independent samples = usable markets = {usable}. This is FAR too few to")
-    print(f"  validate or reject an edge. Treat all numbers above as illustrative of the")
-    print(f"  framework only. Validation needs hundreds+ of hourly markets (weeks of")
-    print(f"  capture across calm and volatile regimes). See docs/EDGE_ANALYSIS.md.")
+    print(f"  Independent samples = usable markets = {usable}.")
+    if usable < 200:
+        print(f"  This is far too few to validate or reject an edge; the numbers above are")
+        print(f"  illustrative of the framework only. Validation needs hundreds+ of hourly")
+        print(f"  markets (weeks of capture across regimes). See docs/EDGE_ANALYSIS.md and")
+        print(f"  scripts/capture_progress.py.")
+    elif usable < 500:
+        print(f"  Enough for a first read, not yet firm. Keep capturing toward ~500 markets.")
+    else:
+        print(f"  Enough markets for a meaningful read. Judge model vs market-mid Brier.")
+
+
+def sweep(paths: list[str], min_span_min: float, walk_forward: bool) -> None:
+    rows = build_markets(paths, min_span_min)
+    print("\n## Sensitivity sweep (decision minutes-to-expiry x threshold)")
+    print(f"  usable markets: {len(rows)}   (each cell: trades / total PnL / model Brier)")
+    taus = [45, 30, 15, 5]
+    thrs = [0.02, 0.03, 0.05, 0.08]
+    header = "  tau\\thr " + "".join(f"{t:>16.2f}" for t in thrs)
+    print(header)
+    for tau in taus:
+        cells = []
+        for thr in thrs:
+            calib, trades = evaluate(rows, tau, thr, walk_forward)
+            pnl = sum(t[-1] for t in trades)
+            brier = (sum((p - o) ** 2 for p, _, o in calib) / len(calib)) if calib else float("nan")
+            cells.append(f"{len(trades):>3}/{pnl:+.2f}/{brier:.3f}")
+        print(f"  {tau:>5}m  " + "".join(f"{c:>16}" for c in cells))
 
 
 def main() -> None:
@@ -197,12 +241,18 @@ def main() -> None:
                     help="minimum model-minus-ask edge to trade")
     ap.add_argument("--min-span-min", type=float, default=20.0,
                     help="skip markets observed for fewer than this many minutes")
+    ap.add_argument("--walk-forward", action="store_true",
+                    help="estimate volatility out-of-sample from earlier markets only")
+    ap.add_argument("--sweep", action="store_true",
+                    help="also print a decision-time x threshold sensitivity grid")
     args = ap.parse_args()
     paths = sorted(glob.glob(args.glob))
     if not paths:
         print(f"No files matched {args.glob!r}.")
         return
-    backtest(paths, args.decision_tau_min, args.threshold, args.min_span_min)
+    backtest(paths, args.decision_tau_min, args.threshold, args.min_span_min, args.walk_forward)
+    if args.sweep:
+        sweep(paths, args.min_span_min, args.walk_forward)
 
 
 if __name__ == "__main__":
