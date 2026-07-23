@@ -57,6 +57,12 @@ class Obs:
     down_ask: float
     down_bid: float
     tau_ms: float       # time to hour expiry at this observation
+    # Top-of-book sizes (micros). 0 when the capture predates size recording,
+    # which disables the imbalance strategy rather than faking a value.
+    up_bid_sz: float = 0.0
+    up_ask_sz: float = 0.0
+    down_bid_sz: float = 0.0
+    down_ask_sz: float = 0.0
 
 
 @dataclass
@@ -108,7 +114,9 @@ def load_markets(paths, asset_filter=None, min_span_min=20.0):
                     o = (int(r["event_time_ms"]), int(p["reference_price_micros"]),
                          int(p["target_price_micros"]),
                          int(p["up_best_ask_micros"]), int(p["up_best_bid_micros"]),
-                         int(p["down_best_ask_micros"]), int(p["down_best_bid_micros"]))
+                         int(p["down_best_ask_micros"]), int(p["down_best_bid_micros"]),
+                         int(p.get("up_bid_size_micros", 0)), int(p.get("up_ask_size_micros", 0)),
+                         int(p.get("down_bid_size_micros", 0)), int(p.get("down_ask_size_micros", 0)))
                 except (KeyError, ValueError):
                     continue
                 raw[(a, p.get("condition_id"))].append(o)
@@ -122,7 +130,9 @@ def load_markets(paths, asset_filter=None, min_span_min=20.0):
         obs = [Obs(t=r[0], s=r[1], k=r[2],
                    up_ask=r[3] / DOLLAR, up_bid=r[4] / DOLLAR,
                    down_ask=r[5] / DOLLAR, down_bid=r[6] / DOLLAR,
-                   tau_ms=max(0.0, expiry_ms(r[0]) - r[0])) for r in rows]
+                   tau_ms=max(0.0, expiry_ms(r[0]) - r[0]),
+                   up_bid_sz=r[7], up_ask_sz=r[8],
+                   down_bid_sz=r[9], down_ask_sz=r[10]) for r in rows]
         markets.append(Market(asset=asset, condition=cond, obs=obs, strike=strike,
                               up_wins=(rows[-1][1] >= strike), start_t=rows[0][0]))
     markets.sort(key=lambda m: m.start_t)  # chronological for walk-forward
@@ -241,6 +251,120 @@ class Momentum(Strategy):
         return None
 
 
+class BookImbalance(Strategy):
+    """Order-book imbalance: bet the side with resting size behind it.
+
+    imbalance = (bid_size - ask_size) / (bid_size + ask_size) for each leg;
+    positive means more size wants to buy than sell.
+
+    The two legs are complementary (buying Up is selling Down), so in practice
+    down_imbalance mirrors up_imbalance. We average the two mirrored views,
+    which keeps the score in [-1, 1] so `min_imbalance` means what it says, and
+    still degrades sensibly if a venue ever quotes them independently.
+
+    Requires size data — captures that predate size recording are skipped
+    rather than silently scored on zeros.
+    """
+    def __init__(self, min_imbalance=0.30, frac=0.02, decision_min=25.0):
+        self.min_imbalance, self.frac, self.decision_min = min_imbalance, frac, decision_min
+        self.name = f"book_imbalance(min={min_imbalance})"
+
+    def decide(self, hist, market):
+        o = hist[-1]
+        if abs(o.tau_ms - self.decision_min * 60000) > 45000:
+            return None
+        up_total = o.up_bid_sz + o.up_ask_sz
+        down_total = o.down_bid_sz + o.down_ask_sz
+        if up_total <= 0 or down_total <= 0:
+            return None  # no size data in this capture
+        up_imb = (o.up_bid_sz - o.up_ask_sz) / up_total
+        down_imb = (o.down_bid_sz - o.down_ask_sz) / down_total
+        net = (up_imb - down_imb) / 2  # mirrored legs -> keep the score in [-1, 1]
+        if net > self.min_imbalance:
+            return ("UP", self.frac, o.up_ask)
+        if net < -self.min_imbalance:
+            return ("DOWN", self.frac, o.down_ask)
+        return None
+
+
+class VolRegime(Strategy):
+    """Fair-value, but only traded in a chosen volatility regime.
+
+    Compares short-horizon realised vol (recent window) against the
+    walk-forward long-run estimate. `regime="low"` trades only when the market
+    is calmer than usual (drift is more predictable); `regime="high"` only when
+    it is livelier. This is a filter on the fair-value edge, not a new edge.
+    """
+    def __init__(self, regime="low", ratio=1.0, threshold=0.03, decision_min=30.0,
+                 window_min=10.0, frac=0.02):
+        self.regime, self.ratio, self.threshold = regime, ratio, threshold
+        self.decision_min, self.window_min, self.frac = decision_min, window_min, frac
+        self.name = f"vol_regime({regime},r={ratio},th={threshold})"
+
+    def decide(self, hist, market):
+        o = hist[-1]
+        if abs(o.tau_ms - self.decision_min * 60000) > 45000:
+            return None
+        if self.v <= 0 or o.tau_ms <= 0 or o.s <= 0 or o.k <= 0:
+            return None
+        window = [h for h in hist if o.t - h.t <= self.window_min * 60000]
+        if len(window) < 4:
+            return None
+        num = den = 0.0
+        picked = []
+        for h in window:
+            if not picked or h.t - picked[-1].t >= VOL_MIN_STEP_MS:
+                picked.append(h)
+        for a, b in zip(picked, picked[1:]):
+            dt = b.t - a.t
+            if dt <= 0 or a.s <= 0 or b.s <= 0:
+                continue
+            rr = math.log(b.s / a.s)
+            num += rr * rr
+            den += dt
+        if den <= 0:
+            return None
+        recent = max(num / den, VOL_PRIOR_RATE * VOL_FLOOR_FRACTION)
+        calm = recent <= self.v * self.ratio
+        if (self.regime == "low") != calm:
+            return None
+        p_up = min(0.99, max(0.01, phi(math.log(o.s / o.k) / math.sqrt(self.v * o.tau_ms))))
+        if p_up - o.up_ask > self.threshold:
+            return ("UP", self.frac, o.up_ask)
+        if (1 - p_up) - o.down_ask > self.threshold:
+            return ("DOWN", self.frac, o.down_ask)
+        return None
+
+
+class MultiMomentum(Strategy):
+    """Momentum that must agree across several horizons before committing."""
+    def __init__(self, horizons_min=(5.0, 15.0, 30.0), min_move_bps=4.0, frac=0.02,
+                 decision_min=20.0):
+        self.horizons = [h * 60000 for h in horizons_min]
+        self.min_move = min_move_bps / 10000.0
+        self.frac, self.decision_min = frac, decision_min
+        self.name = f"multi_momentum({'/'.join(str(int(h)) for h in horizons_min)}m,{min_move_bps:g}bps)"
+
+    def decide(self, hist, market):
+        o = hist[-1]
+        if abs(o.tau_ms - self.decision_min * 60000) > 45000:
+            return None
+        votes = []
+        for span in self.horizons:
+            past = [h for h in hist if o.t - h.t >= span]
+            if not past or past[-1].s <= 0:
+                return None  # not enough history for every horizon
+            move = (o.s - past[-1].s) / past[-1].s
+            if abs(move) < self.min_move:
+                return None
+            votes.append(1 if move > 0 else -1)
+        if all(v == 1 for v in votes):
+            return ("UP", self.frac, o.up_ask)
+        if all(v == -1 for v in votes):
+            return ("DOWN", self.frac, o.down_ask)
+        return None
+
+
 class Favorite(Strategy):
     """Baseline: back the market's favorite (the side priced most likely to win,
     i.e. the higher ask) once, near the decision time. Tests whether simply
@@ -327,6 +451,10 @@ def default_strategies():
         FairValue(threshold=0.04, decision_min=30.0),
         FairValue(threshold=0.02, decision_min=15.0),
         Momentum(lookback_min=10.0, min_move_bps=5.0),
+        MultiMomentum(),
+        VolRegime(regime="low"),
+        VolRegime(regime="high"),
+        BookImbalance(),
         Favorite(min_prob=0.60),
     ]
 
@@ -353,8 +481,25 @@ GRIDS = {
         "min_prob": [0.55, 0.60, 0.70, 0.80],
         "decision_min": [30.0, 20.0, 10.0],
     },
+    "multi_momentum": {
+        "horizons_min": [(5.0, 15.0, 30.0), (3.0, 10.0, 20.0), (5.0, 20.0, 40.0)],
+        "min_move_bps": [2.0, 4.0, 8.0],
+        "decision_min": [30.0, 20.0, 10.0],
+    },
+    "vol_regime": {
+        "regime": ["low", "high"],
+        "ratio": [0.7, 1.0, 1.4],
+        "threshold": [0.02, 0.04],
+        "decision_min": [30.0, 15.0],
+    },
+    "book_imbalance": {
+        "min_imbalance": [0.2, 0.3, 0.5],
+        "decision_min": [30.0, 20.0, 10.0],
+    },
 }
-BUILDERS = {"fair_value": FairValue, "momentum": Momentum, "favorite": Favorite}
+BUILDERS = {"fair_value": FairValue, "momentum": Momentum, "favorite": Favorite,
+            "multi_momentum": MultiMomentum, "vol_regime": VolRegime,
+            "book_imbalance": BookImbalance}
 
 
 def build(family, params):
@@ -417,9 +562,11 @@ def main():
     ap.add_argument("--fee", type=float, default=0.0, help="taker fee as fraction of stake")
     ap.add_argument("--min-span-min", type=float, default=20.0)
     ap.add_argument("--no-walk-forward", action="store_true")
-    ap.add_argument("--strategy", choices=["fair_value", "momentum", "favorite", "all"],
-                    default="all")
-    ap.add_argument("--train", choices=["fair_value", "momentum", "favorite"],
+    ap.add_argument("--strategy", choices=["fair_value", "momentum", "favorite",
+                                           "multi_momentum", "vol_regime",
+                                           "book_imbalance", "all"], default="all")
+    ap.add_argument("--train", choices=["fair_value", "momentum", "favorite",
+                                        "multi_momentum", "vol_regime", "book_imbalance"],
                     help="grid-search a strategy family with a train/test split")
     ap.add_argument("--train-frac", type=float, default=0.6,
                     help="chronological fraction of markets used for training")

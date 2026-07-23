@@ -49,6 +49,19 @@ def day_path(out_dir: str) -> str:
     return os.path.join(out_dir, f"snapshots-{day}.jsonl")
 
 
+def top_size(book: dict, side: str) -> str:
+    """Top-of-book quantity for `side` ("bids"/"asks"), or "0" when absent.
+
+    Sizes enable order-book imbalance signals; price-only data cannot express
+    them. Missing sizes degrade to "0" so older captures stay readable.
+    """
+    try:
+        levels = book.get(side) or []
+        return str(levels[0]["quantity_micros"])
+    except (KeyError, IndexError, TypeError):
+        return "0"
+
+
 def to_records(snap: dict, now_ms: int) -> list[dict]:
     out = []
     for a in snap.get("assets", []):
@@ -63,6 +76,10 @@ def to_records(snap: dict, now_ms: int) -> list[dict]:
                 "up_best_bid_micros": up["best_bid_micros"],
                 "down_best_ask_micros": down["best_ask_micros"],
                 "down_best_bid_micros": down["best_bid_micros"],
+                "up_bid_size_micros": top_size(up, "bids"),
+                "up_ask_size_micros": top_size(up, "asks"),
+                "down_bid_size_micros": top_size(down, "bids"),
+                "down_ask_size_micros": top_size(down, "asks"),
             }
         except KeyError:
             continue
