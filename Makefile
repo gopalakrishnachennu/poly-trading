@@ -9,7 +9,8 @@ TLA_URL     := https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2t
 TLA_SHA     := cc4803dce2a8ffaf0f5920a9dc39df4b5ee34ab4cb53fb58ac557277a7e516b3
 
 .PHONY: help verify ci fmt fmt-fix clippy test deny terminal terminal-install \
-        tla capture progress backtest analyze clean engine-report live-paper data-summary
+        tla capture progress backtest analyze clean engine-report live-paper data-summary \
+        capture-5m capture-windows
 
 help: ## Show this help
 	@echo "Targets:"
@@ -87,3 +88,6 @@ data-summary: ## Refresh the DATA tab readiness summary
 
 capture-5m: ## Capture BTC 5-minute markets (read-only, ~288 markets/day)
 	python3 scripts/capture_5m.py
+
+capture-windows: ## Capture BTC+ETH 5m & 15m markets + feed the terminal WINDOWS tab
+	python3 scripts/capture_windows.py

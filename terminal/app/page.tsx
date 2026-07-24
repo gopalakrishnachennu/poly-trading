@@ -500,7 +500,12 @@ type DataSet = { key: string; label: string; path: string; what: string; files: 
 type DataSummary = { generated_at_ms: number; files_scanned: number; markets_total: number; markets_usable: number; min_span_min: number; target_min: number; target_good: number; by_asset: Record<string, number>; by_day: Record<string, number>; first_market_ms: number | null; last_market_ms: number | null };
 type DataReport = { generated_at_ms: number; datasets: DataSet[]; summary: DataSummary | null; summary_hint: string };
 
-const WORKSPACES = ["MARKETS", "NEURAL", "RISK", "POSITIONS", "SETTLEMENT", "DATA", "OPERATIONS", "AUDIT", "SETTINGS"] as const;
+type WindowMarket = { asset: string; window: "5m" | "15m" | "1h"; cond: string; end_ms: number;
+  up_bid: number | null; up_ask: number | null; down_bid: number | null; down_ask: number | null; t_ms: number };
+type WindowsReport = { available: boolean; generated_at_ms: number; short_capture_age_ms: number | null;
+  short_capture_live: boolean; markets: WindowMarket[]; note: string };
+
+const WORKSPACES = ["MARKETS", "WINDOWS", "NEURAL", "RISK", "POSITIONS", "SETTLEMENT", "DATA", "OPERATIONS", "AUDIT", "SETTINGS"] as const;
 type Workspace = (typeof WORKSPACES)[number];
 
 export default function Terminal() {
@@ -519,6 +524,8 @@ export default function Terminal() {
   const [livePaperReason, setLivePaperReason] = useState("loading live paper trader");
   const [liveBook, setLiveBook] = useState(0);
   const [dataReport, setDataReport] = useState<DataReport | null>(null);
+  const [windows, setWindows] = useState<WindowsReport | null>(null);
+  const [windowsMessage, setWindowsMessage] = useState("loading short-window markets");
   const commandRef = useRef<HTMLInputElement>(null);
   // Keep the server and first client render deterministic; the clock starts
   // after hydration so the terminal does not throw away its SSR tree.
@@ -563,6 +570,22 @@ export default function Terminal() {
     };
     void read();
     const timer = window.setInterval(read, 10_000);
+    return () => { disposed = true; window.clearInterval(timer); };
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    const read = async () => {
+      try {
+        const response = await fetch("/api/windows", { cache: "no-store" });
+        if (!response.ok) throw new Error(`windows HTTP ${response.status}`);
+        const next = await response.json() as WindowsReport;
+        if (!Array.isArray(next.markets)) throw new Error("windows contract invalid");
+        if (!disposed) { setWindows(next); setWindowsMessage(""); }
+      } catch (reason) { if (!disposed) setWindowsMessage(reason instanceof Error ? reason.message : "windows unavailable"); }
+    };
+    void read();
+    const timer = window.setInterval(read, 4_000);
     return () => { disposed = true; window.clearInterval(timer); };
   }, []);
 
@@ -1046,6 +1069,52 @@ export default function Terminal() {
         </div> : <div className="paper-empty">{engineReason}</div>}
       </Panel>
   );
+  const windowMarkets = windows?.markets ?? [];
+  const px = (value: number | null) => (value === null || !Number.isFinite(value) ? "—" : value.toFixed(2));
+  const countdown = (endMs: number) => {
+    const remaining = endMs - now;
+    if (remaining <= 0) return "RESOLVING";
+    const total = Math.floor(remaining / 1000);
+    return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+  };
+  const shortLive = windows?.short_capture_live === true;
+  const pWindows = (
+      <Panel code="W1" title="MULTI-WINDOW MARKETS / BTC + ETH · 5m · 15m · 1h" className="windows-panel"
+        action={<span className="badge-safe unavailable">OBSERVATION ONLY</span>}>
+        <div className="windows-note">
+          <span><StatusDot tone={shortLive ? "green" : "amber"}/>5m/15m CAPTURE {shortLive ? "LIVE" : "OFFLINE — run make capture-windows"}</span>
+          <span><StatusDot tone={ready ? "green" : "amber"}/>1h GATEWAY {ready ? "READY" : mode.toUpperCase()}</span>
+        </div>
+        {windowMarkets.length === 0
+          ? <div className="paper-empty">{windowsMessage || "NO SHORT-WINDOW OR HOURLY MARKETS AVAILABLE"}</div>
+          : <div className="windows-grid">
+            {windowMarkets.map((market) => {
+              const fresh = market.window === "1h" || now - market.t_ms < 30_000;
+              const upSpread = market.up_bid !== null && market.up_ask !== null ? market.up_ask - market.up_bid : null;
+              return <div className={`window-card ${fresh ? "" : "stale"}`} key={`${market.asset}-${market.window}`}>
+                <div className="window-card-head">
+                  <b className={market.asset === "BTC" ? "amber-text" : ""}>{market.asset}</b>
+                  <span className="win-badge">{market.window.toUpperCase()}</span>
+                  <span className="window-countdown">{countdown(market.end_ms)}</span>
+                </div>
+                <div className="window-legs">
+                  <div className="window-leg">
+                    <span className="leg-name up">UP</span>
+                    <span className="leg-val">{px(market.up_bid)}<small> bid</small></span>
+                    <span className="leg-val">{px(market.up_ask)}<small> ask</small></span>
+                  </div>
+                  <div className="window-leg">
+                    <span className="leg-name down">DOWN</span>
+                    <span className="leg-val">{px(market.down_bid)}<small> bid</small></span>
+                    <span className="leg-val">{px(market.down_ask)}<small> ask</small></span>
+                  </div>
+                </div>
+                <div className="window-spread">UP SPREAD {upSpread === null ? "—" : `${(upSpread * 100).toFixed(1)}¢`} · {market.cond}</div>
+              </div>;
+            })}
+          </div>}
+      </Panel>
+  );
   const pHealth = (
       <Panel code="06" title="SYSTEM HEALTH" className="health-panel" action={<button className="text-button" onClick={() => setPaused((value) => !value)}>{paused ? "RESUME" : "PAUSE CLIENT"}</button>}>
         <div className="health-list"><div><span><StatusDot tone={statusTone}/>Projection gateway</span><b>{mode.toUpperCase()}</b></div><div><span><StatusDot tone={ready ? "green" : "red"}/>Atomic assets</span><b>{ready ? "BTC + ETH" : "NONE"}</b></div><div><span><StatusDot tone={paper?.active ? "green" : "amber"}/>Paper recorder</span><b>{paper?.active ? `${paper.events_recorded} EVENTS` : "IDLE"}</b></div><div><span><StatusDot tone={replayHealthy ? "green" : "amber"}/>Journal replay</span><b>{replayHealthy ? "VERIFIED" : "PENDING"}</b></div><div><span><StatusDot tone="blue"/>Credentials / transport</span><b>ABSENT</b></div><div><span><StatusDot tone={snapshot?.no_trade ? "green" : "red"}/>NO_TRADE contract</span><b>{snapshot?.no_trade ? "ENFORCED" : "CLIENT FAIL-CLOSED"}</b></div><div><span><StatusDot tone={ready ? "green" : "amber"}/>Projection age</span><b>{snapshot ? `${Math.max(0, now - snapshot.generated_at_ms)}ms` : "UNAVAILABLE"}</b></div></div>
@@ -1111,6 +1180,7 @@ export default function Terminal() {
     </section>}
 
     {workspace === "MARKETS" && <div className="terminal-grid">{pIdentity}{pChart}{pBook}</div>}
+    {workspace === "WINDOWS" && <div className="ws-full">{pWindows}</div>}
     {workspace === "NEURAL" && <div className="ws-full">{pNeural}</div>}
     {workspace === "RISK" && <div className="ws-stack">{pRisk}{sTelemetry}</div>}
     {workspace === "POSITIONS" && <div className="ws-flow">{pLive}{pEngine}</div>}
