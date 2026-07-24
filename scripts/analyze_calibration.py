@@ -163,7 +163,60 @@ def main() -> None:
             if bets:
                 print(f"  {mode + ' p>=' + format(threshold, '.2f'):>26} {bets:>6} "
                       f"{100*wins/bets:>6.1f}% {pnl/bets:>+9.4f} {pnl:>+9.2f}")
-    print()
+    # ---- 4. is there room for ANY model? -----------------------------------
+    # Murphy decomposition: Brier = reliability - resolution + uncertainty.
+    # Reliability is the part a better model could remove (systematic mispricing).
+    # Uncertainty is irreducible coin-flip noise no model can touch.
+    # Use one sample per market so the unit is independent.
+    per_market = []
+    for m in markets:
+        o = sample_at(m, decisions[len(decisions) // 2])
+        if o is None or not (0 < o.up_ask < 1):
+            continue
+        per_market.append(((o.up_bid + o.up_ask) / 2, 1 if m.up_wins else 0))
+    if len(per_market) >= 10:
+        n = len(per_market)
+        ybar = sum(y for _, y in per_market) / n
+        brier = sum((p - y) ** 2 for p, y in per_market) / n
+        irreducible = sum(p * (1 - p) for p, _ in per_market) / n
+        bins = [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.01]
+        reliability = resolution = noise_floor = 0.0
+        for lo, hi in zip(bins, bins[1:]):
+            b = [(p, y) for p, y in per_market if lo <= p < hi]
+            if not b:
+                continue
+            w = len(b) / n
+            pbar = sum(p for p, _ in b) / len(b)
+            ybar_k = sum(y for _, y in b) / len(b)
+            reliability += w * (pbar - ybar_k) ** 2
+            resolution += w * (ybar_k - ybar) ** 2
+            # Under PERFECT calibration the bin mean still scatters by binomial
+            # noise: Var = p(1-p)/n_k. Weighted, that is the reliability we would
+            # measure from a flawless market. Anything at or below it is noise.
+            noise_floor += w * (pbar * (1 - pbar) / len(b))
+        half_spread = sum(half_spreads) / len(half_spreads)
+        print("## Is there room for ANY model? (independent unit = market)")
+        print(f"  markets used                : {n}")
+        print(f"  market Brier score          : {brier:.4f}   (lower is better)")
+        print(f"  irreducible coin-flip noise : {irreducible:.4f}   (no model can beat this)")
+        print(f"  resolution (market skill)   : {resolution:.4f}   (higher = market is informative)")
+        print(f"  measured miscalibration     : {reliability:.4f}")
+        print(f"  noise floor at this sample  : {noise_floor:.4f}   (what a PERFECT market would show)")
+        ratio = reliability / noise_floor if noise_floor > 0 else float("inf")
+        print(f"  signal-to-noise             : {ratio:.2f}x")
+        print(f"  cost to trade (half-spread) : {half_spread:.4f} per share\n")
+        if ratio < 2.0:
+            print("  VERDICT: the apparent mispricing is INDISTINGUISHABLE FROM NOISE at this")
+            print("           sample size. There is no measurable room for a better model yet.")
+        else:
+            print("  VERDICT: miscalibration exceeds the noise floor. Worth testing whether a")
+            print("           model can harvest it — confirm against the harvest P&L above,")
+            print("           which is the ground truth; this decomposition is only a hint.")
+        print("  NOTE: the harvest test above SIMULATES the actual bets and is the")
+        print("        authoritative answer. This section only says whether looking harder")
+        print("        is justified; it never establishes a profitable strategy by itself.")
+        print()
+
     print("## Reading this")
     print("  A real edge shows up as a calibration band whose 95% interval EXCLUDES the")
     print("  implied price, in the same direction, at a size bigger than the half-spread —")
