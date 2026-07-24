@@ -73,6 +73,8 @@ type PaperPreflight = { eligible: boolean; checked_at_ms: number; gates: Record<
 type RuntimeConfiguration = { mode: string; config_id: string | null; digest: string | null; source: string; restart_required_for_change: true; permits_new_paper_campaign: boolean; reason: string; effective: { sources: { gamma_keyset_url: string; clob_book_url: string; reference_api_url: string }; polling: { http_timeout_ms: number; refresh_interval_ms: number; discovery_refresh_ms: number; discovery_lookback_ms: number; discovery_lookahead_ms: number; maximum_response_bytes: number }; projection: { maximum_book_age_ms: number; maximum_reference_age_ms: number; maximum_cross_book_skew_ms: number; maximum_projection_age_ms: number }; client_display: { poll_interval_ms: number; request_timeout_ms: number; maximum_client_age_ms: number; maximum_future_skew_ms: number } } };
 type ResearchExportStatus = { available: boolean; root: string; last_exported_at_ms: number | null; campaign_id: string | null; source_records: number; partitions: number; last_error: string | null };
 type ResearchExportReport = { status: ResearchExportStatus; observation_rows: number; decision_rows: number; trade_rows: number };
+type CaptureStream = { stream: "research" | "raw_ticks"; label: string; state: "RUNNING" | "STARTING" | "STOPPING" | "STOPPED"; pid: number | null; managed: boolean; high_volume: boolean; log: string };
+type CaptureControl = { paper_only: true; streams: CaptureStream[]; rule: string };
 
 const API = (process.env.NEXT_PUBLIC_TERMINAL_API_URL ?? "http://127.0.0.1:8088").replace(/\/+$/, "");
 // Bootstrap-only guards apply before the read-only configuration frame loads.
@@ -527,6 +529,8 @@ export default function Terminal() {
   const [paperPreflight, setPaperPreflight] = useState<PaperPreflight | null>(null);
   const [runtimeConfiguration, setRuntimeConfiguration] = useState<RuntimeConfiguration | null>(null);
   const [researchExport, setResearchExport] = useState<ResearchExportStatus | null>(null);
+  const [captureControl, setCaptureControl] = useState<CaptureControl | null>(null);
+  const [captureMessage, setCaptureMessage] = useState("");
   const [paperStatusError, setPaperStatusError] = useState("");
   const [paperAuditError, setPaperAuditError] = useState("");
   const [principal, setPrincipal] = useState("1000");
@@ -544,6 +548,22 @@ export default function Terminal() {
     const initial = window.setTimeout(() => setNow(Date.now()), 0);
     const timer = window.setInterval(() => setNow(Date.now()), 250);
     return () => { window.clearTimeout(initial); window.clearInterval(timer); };
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    const read = async () => {
+      try {
+        const response = await fetch("/api/capture", { cache: "no-store" });
+        if (!response.ok) throw new Error(`capture control HTTP ${response.status}`);
+        const next = await response.json() as CaptureControl;
+        if (next.paper_only !== true || !Array.isArray(next.streams)) throw new Error("capture control contract invalid");
+        if (!disposed) { setCaptureControl(next); setCaptureMessage(""); }
+      } catch (reason) { if (!disposed) setCaptureMessage(reason instanceof Error ? reason.message : "capture control unavailable"); }
+    };
+    void read();
+    const timer = window.setInterval(read, 10_000);
+    return () => { disposed = true; window.clearInterval(timer); };
   }, []);
 
   useEffect(() => {
@@ -595,7 +615,22 @@ export default function Terminal() {
       }
     };
     void poll();
-    return () => { disposed = true; if (timer) window.clearTimeout(timer); activeController?.abort(); };
+    // Browsers throttle timers in background tabs, so the loop stalls and the
+    // last frame ages past the freshness budget — the terminal then correctly
+    // shows NO_TRADE even though the gateway is healthy. Re-poll immediately on
+    // becoming visible so returning to the tab recovers at once.
+    const onVisibility = () => {
+      if (document.visibilityState !== "visible" || disposed) return;
+      if (timer) window.clearTimeout(timer);
+      void poll();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      disposed = true;
+      document.removeEventListener("visibilitychange", onVisibility);
+      if (timer) window.clearTimeout(timer);
+      activeController?.abort();
+    };
   }, [maximumClientAgeMs, maximumFutureSkewMs, paused, pollMs, requestTimeoutMs]);
 
   useEffect(() => {
@@ -708,12 +743,26 @@ export default function Terminal() {
       setPaperMessage(`research export refreshed: ${payload.observation_rows} observations / ${payload.decision_rows} decisions / ${payload.trade_rows} trades`);
     } catch (reason) { setPaperMessage(reason instanceof Error ? reason.message : "research export failed"); }
   };
+  const controlCapture = async (stream: CaptureStream["stream"], action: "start" | "stop") => {
+    try {
+      const response = await fetch("/api/capture", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ stream, action }) });
+      const payload = await response.json() as CaptureControl & { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? `capture ${action} HTTP ${response.status}`);
+      setCaptureControl(payload); setCaptureMessage(`${stream} capture ${action} requested; existing journals retained`);
+    } catch (reason) { setCaptureMessage(reason instanceof Error ? reason.message : "capture control failed"); }
+  };
 
   const clientFresh = snapshot ? now - snapshot.generated_at_ms <= maximumClientAgeMs && snapshot.generated_at_ms - now <= maximumFutureSkewMs : false;
   // A previously verified frame is useful context during a short outage, but
   // it must never remain eligible as a current frame after any failed poll.
   const ready = !paused && !error && clientFresh && snapshot?.mode === "ready" && snapshot.assets.length === 2;
-  const asset = ready ? snapshot.assets.find((item) => item.asset === selected) : undefined;
+  // Keep the last complete, digest-validated frame on screen during a short
+  // upstream refresh or hourly rollover.  It is *context only*: `ready`
+  // remains false and every action stays NO_TRADE until a fresh atomic frame
+  // arrives.  Clearing the frame caused the terminal to flash UNAVAILABLE
+  // even though it had useful, explicitly stale operator context.
+  const displaySnapshot = snapshot?.assets.length === 2 ? snapshot : undefined;
+  const asset = displaySnapshot?.assets.find((item) => item.asset === selected);
   const mode: Mode | "offline" = paused
     ? "stale"
     : !snapshot
@@ -726,7 +775,7 @@ export default function Terminal() {
   const remainingText = asset ? `${String(Math.floor(remaining / 60_000)).padStart(2, "0")}:${String(Math.floor(remaining % 60_000 / 1_000)).padStart(2, "0")}` : "--:--";
   const statusTone: "green" | "amber" | "red" = ready && !paused ? "green" : mode === "halted" || mode === "offline" ? "red" : "amber";
   const reason = localKill ? "local operator display latch engaged" : error || snapshot?.reason || "projection unavailable";
-  const visibleAssets = ready ? snapshot.assets : [];
+  const visibleAssets = displaySnapshot?.assets ?? [];
   const audit = useMemo(() => [
     [utcTime(snapshot?.generated_at_ms), "PROJECTION", `Sequence ${snapshot?.sequence ?? "—"} · ${mode.toUpperCase()}`],
     [utcTime(asset?.up_book.received_at_ms), "UP BOOK", asset ? `${asset.asset} best ask ${decimal(asset.up_book.best_ask_micros)}` : "unavailable"],
@@ -842,10 +891,10 @@ export default function Terminal() {
 
   const chartPoints = history[selected].map((sample) => sample.p);
   const pIdentity = (
-      <Panel code="01" title="MARKET IDENTITY" className="watch-panel" action={<span>{ready ? "2 VALIDATED" : "0 AUTHORIZED"}</span>}>
+      <Panel code="01" title="MARKET IDENTITY" className="watch-panel" action={<span>{ready ? "2 VALIDATED" : visibleAssets.length === 2 ? "2 STALE CONTEXT" : "0 AUTHORIZED"}</span>}>
         <div className="watch-head"><span>CONTRACT</span><span>REFERENCE</span><span>UP ASK</span></div>
         {visibleAssets.map((item) => <button className={`watch-row ${selected === item.asset ? "selected" : ""}`} key={item.asset} onClick={() => setSelected(item.asset)}><span><b>{item.asset}</b><small>{new Date(item.start_time_ms).toISOString().slice(11,16)}–{new Date(item.end_time_ms).toISOString().slice(11,16)} UTC</small></span><span><strong>{decimal(item.reference_price_micros, 2)}</strong><small>PUBLIC REF</small></span><span><strong>{decimal(item.up_book.best_ask_micros)}</strong><small>CLOB</small></span></button>)}
-        {!ready && <div className="book-empty">NO COMPLETE CURRENT BTC/ETH PROJECTION<br/>{reason}</div>}
+        {!ready && <div className="book-empty">STALE CONTEXT — NOT AUTHORIZED FOR PAPER DECISIONS<br/>{reason}</div>}
         <div className="session-block"><div className="section-label">SESSION CLOCK</div><div className="countdown">{remainingText}<span>REMAINING</span></div><div className="session-line"><span>Open</span><b>{utcTime(asset?.start_time_ms).slice(0,8)}</b></div><div className="session-line"><span>Close</span><b>{utcTime(asset?.end_time_ms).slice(0,8)}</b></div><div className="session-line"><span>Condition</span><b>{short(asset?.condition_id)}</b></div><div className="session-line"><span>Rules hash</span><b>{short(asset?.rules_fingerprint)}</b></div></div>
         <div className="compact-health"><div><StatusDot tone={ready ? "green" : "red"}/>MARKET IDENTITY</div><div><StatusDot tone={ready ? "green" : "red"}/>UP BOOK</div><div><StatusDot tone={ready ? "green" : "red"}/>DOWN BOOK</div><div><StatusDot tone={ready ? "green" : "red"}/>REFERENCE</div></div>
       </Panel>
@@ -897,6 +946,13 @@ export default function Terminal() {
           <div className="engine-meta">
             <span>{dataReport ? `${dataReport.datasets.reduce((n, d) => n + d.files, 0)} FILES · ${bytes(dataReport.datasets.reduce((n, d) => n + d.bytes, 0))} ON DISK` : "SCANNING…"}</span>
             <span>{dataReport ? utcTime(dataReport.generated_at_ms).slice(0, 8) : ""}</span>
+          </div>
+          <div className="data-readiness">
+            <div className="section-label">CAPTURE CONTROLS <span>LOCAL · EXPLICIT · NO DELETE</span></div>
+            <div className="data-facets">
+              {captureControl?.streams.map((stream) => <div key={stream.stream}><span>{stream.label}</span><b>{stream.state}{stream.pid ? ` · PID ${stream.pid}` : ""}</b><small>{stream.high_volume ? "HIGH VOLUME — raw ticks" : "COMPACT — 15s snapshots"}</small><div><button onClick={() => void controlCapture(stream.stream, "start")} disabled={stream.state !== "STOPPED"}>START</button><button onClick={() => void controlCapture(stream.stream, "stop")} disabled={stream.state === "STOPPED"}>STOP</button></div></div>)}
+            </div>
+            <div className="data-readiness-note">{captureMessage || captureControl?.rule || "Loading local capture authority…"}</div>
           </div>
           <div className="data-readiness">
             <div className="section-label">BACKTEST READINESS <span>{summary ? `${summary.markets_usable} / ${summary.target_good} RESOLVED MARKETS` : "RUN make data-summary"}</span></div>
