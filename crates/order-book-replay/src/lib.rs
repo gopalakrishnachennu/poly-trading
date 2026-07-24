@@ -83,6 +83,38 @@ impl TokenBook {
     pub const fn is_authoritative(&self) -> bool {
         self.authoritative
     }
+
+    /// Top `depth` bid levels, best (highest) price first. Enables queue-aware
+    /// fill research that needs resting size behind the touch, not just the top.
+    #[must_use]
+    pub fn top_bids(&self, depth: usize) -> Vec<(PriceMicros, QuantityMicros)> {
+        self.bids
+            .iter()
+            .rev()
+            .take(depth)
+            .map(|(price, size)| (*price, *size))
+            .collect()
+    }
+
+    /// Top `depth` ask levels, best (lowest) price first.
+    #[must_use]
+    pub fn top_asks(&self, depth: usize) -> Vec<(PriceMicros, QuantityMicros)> {
+        self.asks
+            .iter()
+            .take(depth)
+            .map(|(price, size)| (*price, *size))
+            .collect()
+    }
+
+    #[must_use]
+    pub const fn tick_size(&self) -> Option<PriceMicros> {
+        self.tick_size
+    }
+
+    #[must_use]
+    pub fn last_trade(&self) -> Option<(MarketSide, PriceMicros, Option<QuantityMicros>)> {
+        self.last_trade
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
