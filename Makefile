@@ -84,3 +84,6 @@ clean: ## Remove Rust build artifacts and the downloaded TLC jar
 
 data-summary: ## Refresh the DATA tab readiness summary
 	python3 scripts/capture_progress.py --json var/data-summary.json
+
+capture-5m: ## Capture BTC 5-minute markets (read-only, ~288 markets/day)
+	python3 scripts/capture_5m.py
