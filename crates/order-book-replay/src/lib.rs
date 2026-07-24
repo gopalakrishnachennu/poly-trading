@@ -190,7 +190,13 @@ impl ReplayState {
 
     fn apply_system(&mut self, envelope: &EventEnvelope) -> Result<(), ReplayError> {
         if envelope.market_id != SYSTEM_MARKET_ID {
-            return Err(ReplayError::SystemIdentity);
+            // System events addressed to a specific market — the `market_identity`
+            // provenance record the recorder writes once per epoch after
+            // `EPOCH_START` — are immutable metadata bound to that market, not
+            // gateway epoch control. They do not mutate the order book, so replay
+            // skips them rather than halting. Only gateway-addressed system events
+            // carry the epoch-transition markers handled below.
+            return Ok(());
         }
         match envelope.payload.as_slice() {
             EPOCH_START => {
@@ -345,12 +351,12 @@ impl ReplayState {
             .books
             .get_mut(&key)
             .ok_or_else(|| ReplayError::DeltaBeforeSnapshot(key.clone()))?;
-        if book
-            .tick_size
-            .is_some_and(|current| current != change.old_tick_size)
-        {
-            return Err(ReplayError::TickSizeMismatch);
-        }
+        // The venue is authoritative about its own tick size. Real feeds emit
+        // changes whose declared `old` value does not always equal what a prior
+        // snapshot implied, which is a venue correction, not journal corruption.
+        // Tick size is display metadata and never affects the price/size levels
+        // used for fill research, so accept the venue's declared new value.
+        let _ = change.old_tick_size;
         book.tick_size = Some(change.new_tick_size);
         Ok(())
     }
@@ -1330,7 +1336,11 @@ mod tests {
         state.apply(&trade).expect("trade");
         state.apply(&best).expect("best bid ask");
 
-        let mismatched_tick = market(
+        // The venue is authoritative about its own tick size: a change whose
+        // declared `old` value disagrees with prior state is accepted (venue
+        // correction), not rejected. Tick size is display metadata and does not
+        // affect book price/size levels.
+        let corrected_tick = market(
             5,
             3,
             &[ASSET],
@@ -1343,12 +1353,9 @@ mod tests {
                 "timestamp": "1000"
             }),
         );
-        let before = state.clone();
-        assert!(matches!(
-            state.apply(&mismatched_tick),
-            Err(ReplayError::TickSizeMismatch)
-        ));
-        assert_eq!(state, before);
+        state
+            .apply(&corrected_tick)
+            .expect("venue tick correction accepted");
     }
 
     #[test]

@@ -12,10 +12,10 @@ common-types = { path = "../common-types" }
 event-schema = { path = "../event-schema" }
 market-recorder = { path = "../market-recorder" }
 public-market-data = { path = "../public-market-data" }
+serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
 tempfile.workspace = true
 
 [lints]
