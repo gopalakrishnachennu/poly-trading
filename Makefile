@@ -10,7 +10,7 @@ TLA_SHA     := cc4803dce2a8ffaf0f5920a9dc39df4b5ee34ab4cb53fb58ac557277a7e516b3
 
 .PHONY: help verify ci fmt fmt-fix clippy test deny terminal terminal-install \
         tla capture progress backtest analyze clean engine-report live-paper data-summary \
-        capture-5m capture-windows
+        capture-5m capture-windows stack-up stack-down stack-status
 
 help: ## Show this help
 	@echo "Targets:"
@@ -91,3 +91,13 @@ capture-5m: ## Capture BTC 5-minute markets (read-only, ~288 markets/day)
 
 capture-windows: ## Capture BTC+ETH 5m & 15m markets + feed the terminal WINDOWS tab
 	python3 scripts/capture_windows.py
+
+stack-up: ## Launch the full dashboard stack (gateway + capture + terminal) detached
+	nohup scripts/run-terminal-stack.sh > var/log/stack-supervisor.log 2>&1 &
+	@sleep 2 && scripts/run-terminal-stack.sh status
+
+stack-down: ## Stop the full dashboard stack
+	scripts/run-terminal-stack.sh stop
+
+stack-status: ## Report health of every dashboard process
+	@scripts/run-terminal-stack.sh status
