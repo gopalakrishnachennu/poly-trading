@@ -18,6 +18,14 @@ pub const REQUIRED_ASSETS: [&str; 2] = ["BTC", "ETH"];
 const MAX_BOOK_LEVELS: usize = 50_000;
 const PROJECTED_BOOK_LEVELS: usize = 10;
 const MAX_REASON_BYTES: usize = 512;
+// The venue stamps each book on its own clock; that clock legitimately runs a
+// few milliseconds ahead of ours between NTP corrections, so a book received
+// "in the future" by a hair is normal, not corrupt. Tolerate a small bounded
+// lead here — genuinely impossible timestamps (negative, or ahead by more than
+// this) are still rejected, and real staleness is still caught by
+// `maximum_book_age_ms`. Without this the projection flaps ready<->stale as the
+// sub-latency skew crosses zero.
+const MAX_BOOK_SOURCE_FUTURE_SKEW_MS: i64 = 2_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -427,7 +435,9 @@ pub fn normalize_book(
         return Err(ProjectionError::BookLevelCount);
     }
     let source_timestamp_ms = parse_book_timestamp(&raw.timestamp)?;
-    if source_timestamp_ms < 0 || source_timestamp_ms > received_at_ms {
+    if source_timestamp_ms < 0
+        || source_timestamp_ms > received_at_ms.saturating_add(MAX_BOOK_SOURCE_FUTURE_SKEW_MS)
+    {
         return Err(ProjectionError::BookTimestamp);
     }
     if received_at_ms - source_timestamp_ms > policy.maximum_book_age_ms {

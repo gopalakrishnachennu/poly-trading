@@ -248,6 +248,50 @@ fn rfc3339_book_timestamp_is_preserved() {
 }
 
 #[test]
+fn book_tolerates_small_venue_clock_lead_but_rejects_impossible_future() {
+    // The venue clock runs a few ms ahead of ours between NTP corrections, so a
+    // book stamped just after we receive it is valid, not corrupt. A book stamped
+    // far in the future — or before the epoch — is still rejected.
+    let market = identity(Asset::Bitcoin, 1_000_000);
+    let now = 1_100_000;
+    let policy = ProjectionPolicy::default();
+
+    let mut lead = raw_book(&market, &market.up_token_id, now);
+    lead.timestamp = (now + 50).to_string(); // 50 ms ahead — within tolerance
+    let book =
+        normalize_book(lead, &market.condition_id, &market.up_token_id, now, policy).unwrap();
+    assert_eq!(book.source_timestamp_ms, now + 50);
+
+    let mut far_future = raw_book(&market, &market.up_token_id, now);
+    far_future.timestamp = (now + 2_001).to_string(); // beyond the 2 s tolerance
+    assert_eq!(
+        normalize_book(
+            far_future,
+            &market.condition_id,
+            &market.up_token_id,
+            now,
+            policy
+        )
+        .unwrap_err(),
+        ProjectionError::BookTimestamp
+    );
+
+    let mut negative = raw_book(&market, &market.up_token_id, now);
+    negative.timestamp = "-1".to_owned();
+    assert_eq!(
+        normalize_book(
+            negative,
+            &market.condition_id,
+            &market.up_token_id,
+            now,
+            policy
+        )
+        .unwrap_err(),
+        ProjectionError::BookTimestamp
+    );
+}
+
+#[test]
 fn composition_is_observation_only_and_rejects_skew_or_wrong_hour() {
     let market = identity(Asset::Bitcoin, 1_000_000);
     let now = market.start_time_ms + 10_000;
