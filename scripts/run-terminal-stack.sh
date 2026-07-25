@@ -49,6 +49,7 @@ if [ "${1:-run}" = "stop" ]; then
     lsof -ti tcp:3000 -sTCP:LISTEN 2>/dev/null | xargs -r kill 2>/dev/null || true
     pkill -f capture_windows.py 2>/dev/null || true
     pkill -f live_paper_trader.py 2>/dev/null || true
+    pkill -f live_paper_intraday.py 2>/dev/null || true
     rm -f "$pid_file"
   fi
   exit 0
@@ -60,6 +61,7 @@ if [ "${1:-run}" = "status" ]; then
   echo "terminal  : $(terminal_healthy && echo "up" || echo "DOWN")"
   echo "capture   : $(pgrep -f capture_windows.py >/dev/null && echo "up pid=$(pgrep -f capture_windows.py)" || echo "DOWN")"
   echo "trader    : $(pgrep -f live_paper_trader.py >/dev/null && echo "up pid=$(pgrep -f live_paper_trader.py)" || echo "DOWN")"
+  echo "intraday  : $(pgrep -f live_paper_intraday.py >/dev/null && echo "up pid=$(pgrep -f live_paper_intraday.py)" || echo "DOWN")"
   [ -f "$status_file" ] && cat "$status_file"
   exit 0
 fi
@@ -71,20 +73,20 @@ if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
 fi
 echo $$ > "$pid_file"
 
-gateway_pid=""; recorder_pid=""; terminal_pid=""; trader_pid=""
+gateway_pid=""; recorder_pid=""; terminal_pid=""; trader_pid=""; intraday_pid=""
 
 status() {
-  printf '%s  gateway_pid=%s recorder_pid=%s terminal_pid=%s trader_pid=%s\n' \
+  printf '%s  gateway_pid=%s recorder_pid=%s terminal_pid=%s trader_pid=%s intraday_pid=%s\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    "${gateway_pid:-none}" "${recorder_pid:-none}" "${terminal_pid:-none}" "${trader_pid:-none}" \
+    "${gateway_pid:-none}" "${recorder_pid:-none}" "${terminal_pid:-none}" "${trader_pid:-none}" "${intraday_pid:-none}" \
     > "$status_file"
 }
 
 cleanup() {
   echo "stopping stack..." >&2
-  kill "${trader_pid:-}" "${terminal_pid:-}" "${recorder_pid:-}" "${gateway_pid:-}" 2>/dev/null || true
+  kill "${intraday_pid:-}" "${trader_pid:-}" "${terminal_pid:-}" "${recorder_pid:-}" "${gateway_pid:-}" 2>/dev/null || true
   # kill their process groups too (Next.js spawns children)
-  for pid in "${trader_pid:-}" "${terminal_pid:-}" "${recorder_pid:-}" "${gateway_pid:-}"; do
+  for pid in "${intraday_pid:-}" "${trader_pid:-}" "${terminal_pid:-}" "${recorder_pid:-}" "${gateway_pid:-}"; do
     [ -n "$pid" ] && pkill -P "$pid" 2>/dev/null || true
   done
   rm -f "$pid_file"
@@ -105,6 +107,7 @@ supervise() {
       recorder) recorder_pid=$child;;
       terminal) terminal_pid=$child;;
       trader)   trader_pid=$child;;
+      intraday) intraday_pid=$child;;
     esac
     status
     wait "$child" 2>/dev/null || true
@@ -158,6 +161,12 @@ echo "terminal healthy on http://localhost:3000" >&2
 # /api/windows. Paper only; no credential, order or capital authority.
 supervise trader "$log_dir/live-paper.log" \
   python3 scripts/live_paper_trader.py --interval 10 --principal 1000 &
+
+# 7) Paper intraday mean-reversion tracker — buys UP/DOWN token at
+# ask<=0.25, sells at bid>=0.40 on 15m/1h markets. Companion to (6),
+# writes to var/live-paper/intraday-*. Paper only.
+supervise intraday "$log_dir/live-paper-intraday.log" \
+  python3 scripts/live_paper_intraday.py --interval 5 --principal 1000 --stake 10 &
 
 status
 wait
