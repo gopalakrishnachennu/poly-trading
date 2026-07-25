@@ -500,10 +500,16 @@ type DataSet = { key: string; label: string; path: string; what: string; files: 
 type DataSummary = { generated_at_ms: number; files_scanned: number; markets_total: number; markets_usable: number; min_span_min: number; target_min: number; target_good: number; by_asset: Record<string, number>; by_day: Record<string, number>; first_market_ms: number | null; last_market_ms: number | null };
 type DataReport = { generated_at_ms: number; datasets: DataSet[]; summary: DataSummary | null; summary_hint: string };
 
-type WindowMarket = { asset: string; window: "5m" | "15m" | "1h"; cond: string; end_ms: number;
-  up_bid: number | null; up_ask: number | null; down_bid: number | null; down_ask: number | null; t_ms: number };
+type WindowMarket = {
+  asset: string; window: "5m" | "15m" | "1h"; cond: string;
+  start_ms: number; end_ms: number; t_ms: number;
+  reference_micros: string | null; target_micros: string | null;
+  up_book: Book; down_book: Book;
+  pair: { buy_pair_cost_micros: string; raw_gap_micros: string; executable_quantity_micros: string };
+};
 type WindowsReport = { available: boolean; generated_at_ms: number; short_capture_age_ms: number | null;
-  short_capture_live: boolean; markets: WindowMarket[]; note: string };
+  short_capture_live: boolean; gateway_ready: boolean; markets: WindowMarket[]; note: string };
+const windowKey = (m: { asset: string; window: string }) => `${m.asset}-${m.window}`;
 
 const WORKSPACES = ["MARKETS", "WINDOWS", "NEURAL", "RISK", "POSITIONS", "SETTLEMENT", "DATA", "OPERATIONS", "AUDIT", "SETTINGS"] as const;
 type Workspace = (typeof WORKSPACES)[number];
@@ -526,6 +532,8 @@ export default function Terminal() {
   const [dataReport, setDataReport] = useState<DataReport | null>(null);
   const [windows, setWindows] = useState<WindowsReport | null>(null);
   const [windowsMessage, setWindowsMessage] = useState("loading short-window markets");
+  const [selectedWindow, setSelectedWindow] = useState("BTC-5m");
+  const [windowsHistory, setWindowsHistory] = useState<Record<string, { t: number; p: number }[]>>({});
   const commandRef = useRef<HTMLInputElement>(null);
   // Keep the server and first client render deterministic; the clock starts
   // after hydration so the terminal does not throw away its SSR tree.
@@ -581,7 +589,22 @@ export default function Terminal() {
         if (!response.ok) throw new Error(`windows HTTP ${response.status}`);
         const next = await response.json() as WindowsReport;
         if (!Array.isArray(next.markets)) throw new Error("windows contract invalid");
-        if (!disposed) { setWindows(next); setWindowsMessage(""); }
+        if (!disposed) {
+          setWindows(next);
+          setWindowsMessage("");
+          // Accumulate each market's UP-ask (implied probability) so the chart
+          // has real horizon — the intraday move is the whole point here.
+          setWindowsHistory((prior) => {
+            const copy = { ...prior };
+            for (const market of next.markets) {
+              const ask = Number(market.up_book.best_ask_micros);
+              if (!Number.isFinite(ask) || ask <= 0) continue;
+              const key = windowKey(market);
+              copy[key] = [...(copy[key] ?? []), { t: market.t_ms, p: ask }].slice(-120);
+            }
+            return copy;
+          });
+        }
       } catch (reason) { if (!disposed) setWindowsMessage(reason instanceof Error ? reason.message : "windows unavailable"); }
     };
     void read();
@@ -1070,7 +1093,6 @@ export default function Terminal() {
       </Panel>
   );
   const windowMarkets = windows?.markets ?? [];
-  const px = (value: number | null) => (value === null || !Number.isFinite(value) ? "—" : value.toFixed(2));
   const countdown = (endMs: number) => {
     const remaining = endMs - now;
     if (remaining <= 0) return "RESOLVING";
@@ -1078,41 +1100,41 @@ export default function Terminal() {
     return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
   };
   const shortLive = windows?.short_capture_live === true;
-  const pWindows = (
-      <Panel code="W1" title="MULTI-WINDOW MARKETS / BTC + ETH · 5m · 15m · 1h" className="windows-panel"
-        action={<span className="badge-safe unavailable">OBSERVATION ONLY</span>}>
-        <div className="windows-note">
-          <span><StatusDot tone={shortLive ? "green" : "amber"}/>5m/15m CAPTURE {shortLive ? "LIVE" : "OFFLINE — run make capture-windows"}</span>
-          <span><StatusDot tone={ready ? "green" : "amber"}/>1h GATEWAY {ready ? "READY" : mode.toUpperCase()}</span>
-        </div>
+  const gatewayReady = windows?.gateway_ready === true;
+  const selWin = windowMarkets.find((market) => windowKey(market) === selectedWindow) ?? windowMarkets[0];
+  const selWinKey = selWin ? windowKey(selWin) : selectedWindow;
+  const winChartPoints = (windowsHistory[selWinKey] ?? []).map((sample) => sample.p);
+  const winFresh = (market: WindowMarket) => market.window === "1h" || now - market.t_ms < 30_000;
+  const pWinIdentity = (
+      <Panel code="W1" title="WINDOW MARKETS" className="watch-panel"
+        action={<span>{windowMarkets.length} LIVE</span>}>
+        <div className="watch-head"><span>CONTRACT</span><span>SPOT</span><span>UP ASK</span></div>
         {windowMarkets.length === 0
-          ? <div className="paper-empty">{windowsMessage || "NO SHORT-WINDOW OR HOURLY MARKETS AVAILABLE"}</div>
-          : <div className="windows-grid">
-            {windowMarkets.map((market) => {
-              const fresh = market.window === "1h" || now - market.t_ms < 30_000;
-              const upSpread = market.up_bid !== null && market.up_ask !== null ? market.up_ask - market.up_bid : null;
-              return <div className={`window-card ${fresh ? "" : "stale"}`} key={`${market.asset}-${market.window}`}>
-                <div className="window-card-head">
-                  <b className={market.asset === "BTC" ? "amber-text" : ""}>{market.asset}</b>
-                  <span className="win-badge">{market.window.toUpperCase()}</span>
-                  <span className="window-countdown">{countdown(market.end_ms)}</span>
-                </div>
-                <div className="window-legs">
-                  <div className="window-leg">
-                    <span className="leg-name up">UP</span>
-                    <span className="leg-val">{px(market.up_bid)}<small> bid</small></span>
-                    <span className="leg-val">{px(market.up_ask)}<small> ask</small></span>
-                  </div>
-                  <div className="window-leg">
-                    <span className="leg-name down">DOWN</span>
-                    <span className="leg-val">{px(market.down_bid)}<small> bid</small></span>
-                    <span className="leg-val">{px(market.down_ask)}<small> ask</small></span>
-                  </div>
-                </div>
-                <div className="window-spread">UP SPREAD {upSpread === null ? "—" : `${(upSpread * 100).toFixed(1)}¢`} · {market.cond}</div>
-              </div>;
-            })}
-          </div>}
+          ? <div className="book-empty">{windowsMessage || "NO SHORT-WINDOW OR HOURLY MARKETS AVAILABLE"}</div>
+          : windowMarkets.map((market) => {
+            const key = windowKey(market);
+            return <button className={`watch-row ${selWinKey === key ? "selected" : ""} ${winFresh(market) ? "" : "row-stale"}`} key={key} onClick={() => setSelectedWindow(key)}>
+              <span><b>{market.asset} <em className="win-tag">{market.window.toUpperCase()}</em></b><small>{countdown(market.end_ms)} REMAINING</small></span>
+              <span><strong>{market.reference_micros ? decimal(market.reference_micros, 0) : "—"}</strong><small>{market.window === "1h" ? "REF" : "SPOT"}</small></span>
+              <span><strong>{decimal(market.up_book.best_ask_micros)}</strong><small>CLOB</small></span>
+            </button>;
+          })}
+        <div className="session-block"><div className="section-label">WINDOW CLOCK</div><div className="countdown">{selWin ? countdown(selWin.end_ms) : "--:--"}<span>REMAINING</span></div><div className="session-line"><span>Window</span><b>{selWin ? selWin.window.toUpperCase() : "—"}</b></div><div className="session-line"><span>Open</span><b>{selWin ? utcTime(selWin.start_ms).slice(0,8) : "—"}</b></div><div className="session-line"><span>Close</span><b>{selWin ? utcTime(selWin.end_ms).slice(0,8) : "—"}</b></div><div className="session-line"><span>Condition</span><b>{short(selWin?.cond)}</b></div></div>
+        <div className="compact-health"><div><StatusDot tone={shortLive ? "green" : "amber"}/>5m/15m CAPTURE</div><div><StatusDot tone={gatewayReady ? "green" : "amber"}/>1h GATEWAY</div><div><StatusDot tone={selWin ? "green" : "red"}/>UP BOOK</div><div><StatusDot tone={selWin ? "green" : "red"}/>DOWN BOOK</div></div>
+      </Panel>
+  );
+  const pWinChart = (
+      <Panel code="W2" title={selWin ? `${selWin.asset} ${selWin.window.toUpperCase()} / UP IMPLIED PROBABILITY` : "WINDOW / UP IMPLIED PROBABILITY"} className="chart-panel"
+        action={<span className="badge-safe unavailable">OBSERVATION ONLY</span>}>
+        <div className="quote-strip"><div><span>SPOT REF</span><strong>{selWin?.reference_micros ? decimal(selWin.reference_micros, 2) : "—"}</strong></div><div><span>WINDOW</span><strong>{selWin ? selWin.window.toUpperCase() : "—"}</strong></div><div><span>UP BEST BID</span><strong>{decimal(selWin?.up_book.best_bid_micros)}</strong></div><div><span>UP BEST ASK</span><strong>{decimal(selWin?.up_book.best_ask_micros)}</strong></div><div><span>ENDS IN</span><strong>{selWin ? countdown(selWin.end_ms) : "—"}</strong></div></div>
+        <div className="chart"><LiveChart points={winChartPoints} target="500000"/><div className="target-line"><span>COIN-FLIP 0.50</span></div><div className="chart-x"><span>UP ASK HISTORY</span><span>THIS SESSION ONLY</span><span>MAX 120 SAMPLES</span></div></div>
+        <div className="probability-band"><div className="prob-up" style={{ width: selWin ? `${Number(BigInt(selWin.up_book.best_ask_micros)) / 10_000}%` : "50%" }}><span>UP ASK</span><strong>{decimal(selWin?.up_book.best_ask_micros)}</strong></div><div className="prob-down"><strong>{decimal(selWin?.down_book.best_ask_micros)}</strong><span>DOWN ASK</span></div></div>
+      </Panel>
+  );
+  const pWinBook = (
+      <Panel code="W3" title="COMPLEMENTARY BOOK" className="book-panel" action={<span>{selWin ? `TICK ${decimal(selWin.up_book.tick_size_micros)}` : "UNAVAILABLE"}</span>}>
+        <MiniBook side="UP" book={selWin?.up_book}/><MiniBook side="DOWN" book={selWin?.down_book}/>
+        <div className="pair-economics"><div><span>RAW BUY PAIR</span><b>{decimal(selWin?.pair.buy_pair_cost_micros)}</b></div><div><span>RAW GAP TO 1</span><b>{signedDecimal(selWin?.pair.raw_gap_micros)}</b></div><div><span>EXECUTABLE QTY</span><b>{quantity(selWin?.pair.executable_quantity_micros)}</b></div><div className="decision"><span>OBSERVATION ONLY</span><b>NO_TRADE</b></div></div>
       </Panel>
   );
   const pHealth = (
@@ -1180,7 +1202,7 @@ export default function Terminal() {
     </section>}
 
     {workspace === "MARKETS" && <div className="terminal-grid">{pIdentity}{pChart}{pBook}</div>}
-    {workspace === "WINDOWS" && <div className="ws-full">{pWindows}</div>}
+    {workspace === "WINDOWS" && <div className="terminal-grid">{pWinIdentity}{pWinChart}{pWinBook}</div>}
     {workspace === "NEURAL" && <div className="ws-full">{pNeural}</div>}
     {workspace === "RISK" && <div className="ws-stack">{pRisk}{sTelemetry}</div>}
     {workspace === "POSITIONS" && <div className="ws-flow">{pLive}{pEngine}</div>}

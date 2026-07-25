@@ -157,15 +157,22 @@ def main() -> None:
                 rows_written += len(out_rows)
                 by_tok = {row["tok"]: row for row in out_rows}
                 up_row, down_row = by_tok.get(up), by_tok.get(down)
+                depth = lambda row, key: (row[key][:8] if row else [])  # noqa: E731
                 live[idx] = {
                     "asset": asset,
                     "window": "5m" if step == 300 else "15m",
-                    "cond": cond[:12],
+                    "cond": cond,
+                    "start_ms": window * 1000,
                     "end_ms": (window + step) * 1000,
                     "up_bid": best(up_row["bids"]) if up_row else None,
                     "up_ask": best(up_row["asks"]) if up_row else None,
                     "down_bid": best(down_row["bids"]) if down_row else None,
                     "down_ask": best(down_row["asks"]) if down_row else None,
+                    # Full top-of-book depth (best-first, price+size micros) so the
+                    # terminal can render the same complementary book the hourly
+                    # markets show. Capped to keep the snapshot small.
+                    "up_bids": depth(up_row, "bids"), "up_asks": depth(up_row, "asks"),
+                    "down_bids": depth(down_row, "bids"), "down_asks": depth(down_row, "asks"),
                     "t_ms": now_ns // 1_000_000,
                 }
 
