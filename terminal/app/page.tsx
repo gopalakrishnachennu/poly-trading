@@ -511,7 +511,7 @@ type WindowsReport = { available: boolean; generated_at_ms: number; short_captur
   short_capture_live: boolean; gateway_ready: boolean; markets: WindowMarket[]; note: string };
 const windowKey = (m: { asset: string; window: string }) => `${m.asset}-${m.window}`;
 
-const WORKSPACES = ["MARKETS", "WINDOWS", "NEURAL", "RISK", "POSITIONS", "SETTLEMENT", "DATA", "OPERATIONS", "AUDIT", "SETTINGS"] as const;
+const WORKSPACES = ["MARKETS", "NEURAL", "RISK", "POSITIONS", "SETTLEMENT", "DATA", "OPERATIONS", "AUDIT", "SETTINGS"] as const;
 type Workspace = (typeof WORKSPACES)[number];
 
 export default function Terminal() {
@@ -532,7 +532,7 @@ export default function Terminal() {
   const [dataReport, setDataReport] = useState<DataReport | null>(null);
   const [windows, setWindows] = useState<WindowsReport | null>(null);
   const [windowsMessage, setWindowsMessage] = useState("loading short-window markets");
-  const [selectedWindow, setSelectedWindow] = useState("BTC-5m");
+  const [selectedWindow, setSelectedWindow] = useState("BTC-1h");
   const [windowsHistory, setWindowsHistory] = useState<Record<string, { t: number; p: number }[]>>({});
   const commandRef = useRef<HTMLInputElement>(null);
   // Keep the server and first client render deterministic; the clock starts
@@ -821,7 +821,6 @@ export default function Terminal() {
   const remainingText = asset ? `${String(Math.floor(remaining / 60_000)).padStart(2, "0")}:${String(Math.floor(remaining % 60_000 / 1_000)).padStart(2, "0")}` : "--:--";
   const statusTone: "green" | "amber" | "red" = ready && !paused ? "green" : mode === "halted" || mode === "offline" ? "red" : "amber";
   const reason = localKill ? "local operator display latch engaged" : error || snapshot?.reason || "projection unavailable";
-  const visibleAssets = displaySnapshot?.assets ?? [];
   const audit = useMemo(() => [
     [utcTime(snapshot?.generated_at_ms), "PROJECTION", `Sequence ${snapshot?.sequence ?? "—"} · ${mode.toUpperCase()}`],
     [utcTime(asset?.up_book.received_at_ms), "UP BOOK", asset ? `${asset.asset} best ask ${decimal(asset.up_book.best_ask_micros)}` : "unavailable"],
@@ -936,13 +935,45 @@ export default function Terminal() {
   }, []);
 
   const chartPoints = history[selected].map((sample) => sample.p);
+
+  // Unified market list: hourly (1h) + short windows (5m/15m) for both assets,
+  // from the merged /api/windows feed. Selecting any row focuses that market
+  // and points the asset-level tabs (NEURAL/RISK) at its asset.
+  const windowMarkets = windows?.markets ?? [];
+  const countdown = (endMs: number) => {
+    const remaining = endMs - now;
+    if (remaining <= 0) return "RESOLVING";
+    const total = Math.floor(remaining / 1000);
+    return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+  };
+  const shortLive = windows?.short_capture_live === true;
+  const gatewayReady = windows?.gateway_ready === true;
+  const selWin = windowMarkets.find((market) => windowKey(market) === selectedWindow) ?? windowMarkets[0];
+  const selWinKey = selWin ? windowKey(selWin) : selectedWindow;
+  const winChartPoints = (windowsHistory[selWinKey] ?? []).map((sample) => sample.p);
+  const winFresh = (market: WindowMarket) => market.window === "1h" || now - market.t_ms < 30_000;
+  // When the hourly market is focused, keep using the strict, digest-validated
+  // gateway snapshot for its panels (NO_TRADE authority) rather than the
+  // observational /api/windows reconstruction.
+  const focusHourly = !selWin || selWin.window === "1h";
+  const focusAsset = focusHourly ? asset : undefined;
+  const selectMarket = (market: WindowMarket) => { setSelectedWindow(windowKey(market)); setSelected(market.asset as AssetName); };
+
   const pIdentity = (
-      <Panel code="01" title="MARKET IDENTITY" className="watch-panel" action={<span>{ready ? "2 VALIDATED" : visibleAssets.length === 2 ? "2 STALE CONTEXT" : "0 AUTHORIZED"}</span>}>
-        <div className="watch-head"><span>CONTRACT</span><span>REFERENCE</span><span>UP ASK</span></div>
-        {visibleAssets.map((item) => <button className={`watch-row ${selected === item.asset ? "selected" : ""}`} key={item.asset} onClick={() => setSelected(item.asset)}><span><b>{item.asset}</b><small>{new Date(item.start_time_ms).toISOString().slice(11,16)}–{new Date(item.end_time_ms).toISOString().slice(11,16)} UTC</small></span><span><strong>{decimal(item.reference_price_micros, 2)}</strong><small>PUBLIC REF</small></span><span><strong>{decimal(item.up_book.best_ask_micros)}</strong><small>CLOB</small></span></button>)}
-        {!ready && <div className="book-empty">STALE CONTEXT — NOT AUTHORIZED FOR PAPER DECISIONS<br/>{reason}</div>}
-        <div className="session-block"><div className="section-label">SESSION CLOCK</div><div className="countdown">{remainingText}<span>REMAINING</span></div><div className="session-line"><span>Open</span><b>{utcTime(asset?.start_time_ms).slice(0,8)}</b></div><div className="session-line"><span>Close</span><b>{utcTime(asset?.end_time_ms).slice(0,8)}</b></div><div className="session-line"><span>Condition</span><b>{short(asset?.condition_id)}</b></div><div className="session-line"><span>Rules hash</span><b>{short(asset?.rules_fingerprint)}</b></div></div>
-        <div className="compact-health"><div><StatusDot tone={ready ? "green" : "red"}/>MARKET IDENTITY</div><div><StatusDot tone={ready ? "green" : "red"}/>UP BOOK</div><div><StatusDot tone={ready ? "green" : "red"}/>DOWN BOOK</div><div><StatusDot tone={ready ? "green" : "red"}/>REFERENCE</div></div>
+      <Panel code="01" title="MARKET IDENTITY" className="watch-panel" action={<span>{windowMarkets.length ? `${windowMarkets.length} LIVE` : ready ? "2 VALIDATED" : "0 AUTHORIZED"}</span>}>
+        <div className="watch-head"><span>CONTRACT</span><span>SPOT</span><span>UP ASK</span></div>
+        {windowMarkets.length === 0
+          ? <div className="book-empty">STALE CONTEXT — NOT AUTHORIZED FOR PAPER DECISIONS<br/>{reason}<br/>{windowsMessage}</div>
+          : windowMarkets.map((market) => {
+            const key = windowKey(market);
+            return <button className={`watch-row ${selWinKey === key ? "selected" : ""} ${winFresh(market) ? "" : "row-stale"}`} key={key} onClick={() => selectMarket(market)}>
+              <span><b>{market.asset} <em className="win-tag">{market.window.toUpperCase()}</em></b><small>{countdown(market.end_ms)} REMAINING</small></span>
+              <span><strong>{market.reference_micros ? decimal(market.reference_micros, 0) : "—"}</strong><small>{market.window === "1h" ? "REF" : "SPOT"}</small></span>
+              <span><strong>{decimal(market.up_book.best_ask_micros)}</strong><small>CLOB</small></span>
+            </button>;
+          })}
+        <div className="session-block"><div className="section-label">{focusHourly ? "SESSION CLOCK" : "WINDOW CLOCK"}</div><div className="countdown">{selWin ? countdown(selWin.end_ms) : remainingText}<span>REMAINING</span></div><div className="session-line"><span>Window</span><b>{selWin ? selWin.window.toUpperCase() : "1H"}</b></div><div className="session-line"><span>Open</span><b>{utcTime(selWin?.start_ms).slice(0,8)}</b></div><div className="session-line"><span>Close</span><b>{utcTime(selWin?.end_ms).slice(0,8)}</b></div><div className="session-line"><span>Condition</span><b>{short(selWin?.cond)}</b></div>{focusHourly && <div className="session-line"><span>Rules hash</span><b>{short(focusAsset?.rules_fingerprint)}</b></div>}</div>
+        <div className="compact-health"><div><StatusDot tone={shortLive ? "green" : "amber"}/>5m/15m CAPTURE</div><div><StatusDot tone={gatewayReady ? "green" : "amber"}/>1h GATEWAY</div><div><StatusDot tone={selWin ? "green" : "red"}/>UP BOOK</div><div><StatusDot tone={selWin ? "green" : "red"}/>DOWN BOOK</div></div>
       </Panel>
   );
   const pChart = (
@@ -1092,37 +1123,6 @@ export default function Terminal() {
         </div> : <div className="paper-empty">{engineReason}</div>}
       </Panel>
   );
-  const windowMarkets = windows?.markets ?? [];
-  const countdown = (endMs: number) => {
-    const remaining = endMs - now;
-    if (remaining <= 0) return "RESOLVING";
-    const total = Math.floor(remaining / 1000);
-    return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
-  };
-  const shortLive = windows?.short_capture_live === true;
-  const gatewayReady = windows?.gateway_ready === true;
-  const selWin = windowMarkets.find((market) => windowKey(market) === selectedWindow) ?? windowMarkets[0];
-  const selWinKey = selWin ? windowKey(selWin) : selectedWindow;
-  const winChartPoints = (windowsHistory[selWinKey] ?? []).map((sample) => sample.p);
-  const winFresh = (market: WindowMarket) => market.window === "1h" || now - market.t_ms < 30_000;
-  const pWinIdentity = (
-      <Panel code="W1" title="WINDOW MARKETS" className="watch-panel"
-        action={<span>{windowMarkets.length} LIVE</span>}>
-        <div className="watch-head"><span>CONTRACT</span><span>SPOT</span><span>UP ASK</span></div>
-        {windowMarkets.length === 0
-          ? <div className="book-empty">{windowsMessage || "NO SHORT-WINDOW OR HOURLY MARKETS AVAILABLE"}</div>
-          : windowMarkets.map((market) => {
-            const key = windowKey(market);
-            return <button className={`watch-row ${selWinKey === key ? "selected" : ""} ${winFresh(market) ? "" : "row-stale"}`} key={key} onClick={() => setSelectedWindow(key)}>
-              <span><b>{market.asset} <em className="win-tag">{market.window.toUpperCase()}</em></b><small>{countdown(market.end_ms)} REMAINING</small></span>
-              <span><strong>{market.reference_micros ? decimal(market.reference_micros, 0) : "—"}</strong><small>{market.window === "1h" ? "REF" : "SPOT"}</small></span>
-              <span><strong>{decimal(market.up_book.best_ask_micros)}</strong><small>CLOB</small></span>
-            </button>;
-          })}
-        <div className="session-block"><div className="section-label">WINDOW CLOCK</div><div className="countdown">{selWin ? countdown(selWin.end_ms) : "--:--"}<span>REMAINING</span></div><div className="session-line"><span>Window</span><b>{selWin ? selWin.window.toUpperCase() : "—"}</b></div><div className="session-line"><span>Open</span><b>{selWin ? utcTime(selWin.start_ms).slice(0,8) : "—"}</b></div><div className="session-line"><span>Close</span><b>{selWin ? utcTime(selWin.end_ms).slice(0,8) : "—"}</b></div><div className="session-line"><span>Condition</span><b>{short(selWin?.cond)}</b></div></div>
-        <div className="compact-health"><div><StatusDot tone={shortLive ? "green" : "amber"}/>5m/15m CAPTURE</div><div><StatusDot tone={gatewayReady ? "green" : "amber"}/>1h GATEWAY</div><div><StatusDot tone={selWin ? "green" : "red"}/>UP BOOK</div><div><StatusDot tone={selWin ? "green" : "red"}/>DOWN BOOK</div></div>
-      </Panel>
-  );
   const pWinChart = (
       <Panel code="W2" title={selWin ? `${selWin.asset} ${selWin.window.toUpperCase()} / UP IMPLIED PROBABILITY` : "WINDOW / UP IMPLIED PROBABILITY"} className="chart-panel"
         action={<span className="badge-safe unavailable">OBSERVATION ONLY</span>}>
@@ -1169,7 +1169,7 @@ export default function Terminal() {
       <div className="function-spacer"/><span className="connection"><StatusDot tone={statusTone}/>{paused ? "CLIENT PAUSED" : `${mode.toUpperCase()} · PUBLIC FEED`}</span>
     </nav>
     {(!ready || localKill || noTrade) && <div className={`kill-banner ${mode === "halted" ? "halted" : ""}`}><strong>GLOBAL NO_TRADE</strong><span>{reason}</span></div>}
-    <div className="workspace-label"><span>W1</span>{workspace} / CURRENT BTC + ETH HOURLY MARKETS <em>LIVE PUBLIC PROJECTION</em></div>
+    <div className="workspace-label"><span>W1</span>{workspace} / BTC + ETH · 5m · 15m · 1h <em>LIVE PUBLIC PROJECTION</em></div>
     <section className="paper-control-strip" aria-label="Paper week controls">
       <div className="paper-control-title"><span className="panel-code">P0</span><div><strong>PAPER WEEK RUNNER</strong><small>LOCAL SIMULATION · PUBLIC FEEDS · NO EXTERNAL ORDERS</small></div></div>
       <label>PRINCIPAL USD<input value={principal} onChange={(event) => setPrincipal(event.target.value)} inputMode="decimal" disabled={paper?.active === true} /></label>
@@ -1201,8 +1201,7 @@ export default function Terminal() {
       </div>
     </section>}
 
-    {workspace === "MARKETS" && <div className="terminal-grid">{pIdentity}{pChart}{pBook}</div>}
-    {workspace === "WINDOWS" && <div className="terminal-grid">{pWinIdentity}{pWinChart}{pWinBook}</div>}
+    {workspace === "MARKETS" && <div className="terminal-grid">{pIdentity}{focusHourly ? pChart : pWinChart}{focusHourly ? pBook : pWinBook}</div>}
     {workspace === "NEURAL" && <div className="ws-full">{pNeural}</div>}
     {workspace === "RISK" && <div className="ws-stack">{pRisk}{sTelemetry}</div>}
     {workspace === "POSITIONS" && <div className="ws-flow">{pLive}{pEngine}</div>}
