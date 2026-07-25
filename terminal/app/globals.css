@@ -210,7 +210,8 @@ kbd { border: 1px solid var(--line); background: var(--surface-3); padding: 2px 
 
 /* Multi-window (5m/15m/1h) markets workspace — reuses the MARKETS panels */
 .watch-row .win-tag { font-style: normal; font-size: 7px; color: var(--cyan); border: 1px solid var(--line); padding: 1px 4px; margin-left: 3px; vertical-align: middle; }
-.watch-row.row-stale { opacity: .5; }
+.watch-row .win-tag.rollover { color: var(--amber); border-color: var(--amber); }
+.watch-row.row-stale { opacity: .55; }
 
 @media (max-width: 1100px) {
   .topbar { grid-template-columns: 220px 1fr; }.top-status { display: none; }

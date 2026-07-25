@@ -23,6 +23,12 @@ type Market = {
   up_book: MarketBook;
   down_book: MarketBook;
   pair: { buy_pair_cost_micros: string; raw_gap_micros: string; executable_quantity_micros: string };
+  // Rollover-cached: the gateway is momentarily stale (empty book side at
+  // resolution) and this frame is the last-good one held over the blip. Still
+  // within its own end_time_ms; not served past resolution. Frontend renders a
+  // ROLLOVER indicator instead of dropping the row entirely.
+  stale?: boolean;
+  stale_age_ms?: number;
 };
 
 const API = (process.env.NEXT_PUBLIC_TERMINAL_API_URL ?? "http://127.0.0.1:8088").replace(/\/+$/, "");
@@ -60,17 +66,35 @@ type GatewayAsset = {
   pair: { buy_pair_cost_micros: string; raw_gap_micros: string; executable_quantity_micros: string };
 };
 
+// Hard cap on the gateway fetch — without it, an unresponsive gateway
+// (SIGSTOP, network hang) blocks every /api/windows request indefinitely and
+// wedges the whole terminal. On timeout we fall through to the hourly cache.
+const GATEWAY_FETCH_TIMEOUT_MS = 2_500;
+
 async function gatewayAssets(): Promise<Map<string, GatewayAsset>> {
   const map = new Map<string, GatewayAsset>();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), GATEWAY_FETCH_TIMEOUT_MS);
   try {
-    const response = await fetch(`${API}/api/v1/terminal/snapshot`, { cache: "no-store" });
+    const response = await fetch(`${API}/api/v1/terminal/snapshot`, {
+      cache: "no-store", signal: controller.signal,
+    });
     if (!response.ok) return map;
     const snap = await response.json() as { mode?: string; assets?: GatewayAsset[] };
     if (snap.mode !== "ready" || !Array.isArray(snap.assets)) return map;
     for (const asset of snap.assets) map.set(asset.asset, asset);
-  } catch { /* gateway unavailable */ }
+  } catch { /* gateway unavailable, timeout, or malformed body */ }
+  finally { clearTimeout(timer); }
   return map;
 }
+
+// Per-asset cache of the last-good hourly frame, held across the top-of-hour
+// rollover blip (empty book side while MMs pull orders at resolution). Never
+// served past the market's own end_time_ms, and capped at 90 s of staleness
+// so we don't silently show old prices if the gateway is really down.
+const HOURLY_CACHE_TTL_MS = 90_000;
+type CachedHourly = { asset: GatewayAsset; cached_at_ms: number };
+const hourlyCache = new Map<string, CachedHourly>();
 
 export async function GET() {
   const path = process.env.POLY_WINDOWS_SNAPSHOT_PATH
@@ -105,12 +129,33 @@ export async function GET() {
     }
   } catch { /* capture not running */ }
 
-  // Hourly (1h) from the projection gateway.
+  // Hourly (1h) from the projection gateway — with rollover-blip carry-over.
+  const now = Date.now();
+  const seenAssets = new Set<string>();
   for (const asset of gateway.values()) {
+    hourlyCache.set(asset.asset, { asset, cached_at_ms: now });
+    seenAssets.add(asset.asset);
     markets.push({
-      asset: asset.asset, window: "1h", cond: asset.condition_id, start_ms: asset.start_time_ms, end_ms: asset.end_time_ms, t_ms: Date.now(),
+      asset: asset.asset, window: "1h", cond: asset.condition_id, start_ms: asset.start_time_ms, end_ms: asset.end_time_ms, t_ms: now,
       reference_micros: asset.reference_price_micros, target_micros: asset.target_price_micros,
       up_book: asset.up_book, down_book: asset.down_book, pair: asset.pair,
+    });
+  }
+  // Gateway didn't return this asset this cycle — held it over the blip if the
+  // cached market still exists (before its own end_time) and cache is fresh.
+  for (const [assetName, cached] of hourlyCache) {
+    if (seenAssets.has(assetName)) continue;
+    const ageMs = now - cached.cached_at_ms;
+    if (ageMs > HOURLY_CACHE_TTL_MS || now >= cached.asset.end_time_ms) {
+      hourlyCache.delete(assetName);
+      continue;
+    }
+    const a = cached.asset;
+    markets.push({
+      asset: a.asset, window: "1h", cond: a.condition_id, start_ms: a.start_time_ms, end_ms: a.end_time_ms, t_ms: cached.cached_at_ms,
+      reference_micros: a.reference_price_micros, target_micros: a.target_price_micros,
+      up_book: a.up_book, down_book: a.down_book, pair: a.pair,
+      stale: true, stale_age_ms: ageMs,
     });
   }
 

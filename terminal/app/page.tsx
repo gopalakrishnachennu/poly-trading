@@ -506,6 +506,7 @@ type WindowMarket = {
   reference_micros: string | null; target_micros: string | null;
   up_book: Book; down_book: Book;
   pair: { buy_pair_cost_micros: string; raw_gap_micros: string; executable_quantity_micros: string };
+  stale?: boolean; stale_age_ms?: number;
 };
 type WindowsReport = { available: boolean; generated_at_ms: number; short_capture_age_ms: number | null;
   short_capture_live: boolean; gateway_ready: boolean; markets: WindowMarket[]; note: string };
@@ -951,7 +952,10 @@ export default function Terminal() {
   const selWin = windowMarkets.find((market) => windowKey(market) === selectedWindow) ?? windowMarkets[0];
   const selWinKey = selWin ? windowKey(selWin) : selectedWindow;
   const winChartPoints = (windowsHistory[selWinKey] ?? []).map((sample) => sample.p);
-  const winFresh = (market: WindowMarket) => market.window === "1h" || now - market.t_ms < 30_000;
+  // 1h from the gateway is considered fresh unless the API flagged it as
+  // rollover-cached (empty book side while MMs pull orders at resolution).
+  const winFresh = (market: WindowMarket) =>
+    market.stale === true ? false : market.window === "1h" || now - market.t_ms < 30_000;
   // When the hourly market is focused, keep using the strict, digest-validated
   // gateway snapshot for its panels (NO_TRADE authority) rather than the
   // observational /api/windows reconstruction.
@@ -967,7 +971,7 @@ export default function Terminal() {
           : windowMarkets.map((market) => {
             const key = windowKey(market);
             return <button className={`watch-row ${selWinKey === key ? "selected" : ""} ${winFresh(market) ? "" : "row-stale"}`} key={key} onClick={() => selectMarket(market)}>
-              <span><b>{market.asset} <em className="win-tag">{market.window.toUpperCase()}</em></b><small>{countdown(market.end_ms)} REMAINING</small></span>
+              <span><b>{market.asset} <em className="win-tag">{market.window.toUpperCase()}</em>{market.stale && <em className="win-tag rollover">ROLLOVER</em>}</b><small>{countdown(market.end_ms)} REMAINING</small></span>
               <span><strong>{market.reference_micros ? decimal(market.reference_micros, 0) : "—"}</strong><small>{market.window === "1h" ? "REF" : "SPOT"}</small></span>
               <span><strong>{decimal(market.up_book.best_ask_micros)}</strong><small>CLOB</small></span>
             </button>;
