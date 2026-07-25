@@ -219,6 +219,14 @@ class LiveTrader:
                 book.bankroll = saved.get("bankroll", book.principal)
                 book.principal = saved.get("principal", book.principal)
                 book.bets = saved.get("bets", [])
+                # Restore open positions written by _save so a restart never
+                # drops an unsettled bet. Keys were serialized as lists.
+                for entry in saved.get("positions", []):
+                    key_parts = entry.get("key")
+                    if not isinstance(key_parts, list) or not key_parts:
+                        continue
+                    position = {k: v for k, v in entry.items() if k != "key"}
+                    book.positions[tuple(key_parts)] = position
                 restored += 1
             self.index = [tuple(x) for x in s.get("index", [])][-4000:]
             self.started_at = s.get("started_at", self.started_at)
@@ -231,8 +239,17 @@ class LiveTrader:
         tmp = self.state_path + ".tmp"
         with open(tmp, "w") as f:
             json.dump({
+                # No retention cap: every settled bet is kept so a full month
+                # (or more) is analysable in place. The operator archives the
+                # daily bets-*.jsonl logs monthly; state.json mirrors them so
+                # the bankroll and history survive restarts byte-for-byte.
                 "books": [{"strategy": b.strategy.name, "principal": b.principal,
-                           "bankroll": b.bankroll, "bets": b.bets[-300:]} for b in self.books],
+                           "bankroll": b.bankroll, "bets": b.bets,
+                           # Open positions persisted too — a crash or restart
+                           # must never lose an unsettled bet.
+                           "positions": [{"key": list(key), **position}
+                                          for key, position in b.positions.items()]}
+                          for b in self.books],
                 "index": self.index[-4000:], "started_at": self.started_at,
             }, f)
         os.replace(tmp, self.state_path)
@@ -405,6 +422,37 @@ class LiveTrader:
                 continue
             self.settle(key, state)
             self.markets.pop(key, None)
+
+        # Positions restored from disk whose market ended while the trader was
+        # down: no live tape covers the close, so the outcome cannot be scored
+        # honestly. Void them — refund the stake, log the void — rather than
+        # guessing or silently dropping them.
+        for book in self.books:
+            for key, position in list(book.positions.items()):
+                if key in live_keys or key in self.markets:
+                    continue
+                end_ms = position.get("end_ms")
+                if not isinstance(end_ms, (int, float)) or now_ms < end_ms + 60_000:
+                    continue
+                book.positions.pop(key, None)
+                book.bankroll += position["stake"]
+                self._append_bet_log({
+                    "t": position.get("t"), "settled_t": now_ms,
+                    "asset": position.get("asset"), "window": position.get("window", "1h"),
+                    "market": (key[2][:10] if len(key) > 2 else str(key[-1])[:10]),
+                    "condition_id": position.get("condition_id"),
+                    "strategy": book.strategy.name,
+                    "side": position.get("side"), "price": position.get("price"),
+                    "stake": round(position.get("stake", 0.0), 2),
+                    "void": True, "won": None, "pnl": 0.0,
+                    "bankroll": round(book.bankroll, 4),
+                    "open_obs": position.get("open_obs"),
+                    "reason": "market resolved while trader was offline; outcome unknowable",
+                    "logged_at_ms": now_ms,
+                })
+                print(f"  VOID [{book.strategy.name}] {position.get('asset')} "
+                      f"{position.get('window')} {position.get('side')} — market resolved "
+                      f"while offline; stake ${position.get('stake', 0):.2f} refunded", flush=True)
         self.index = self.index[-4000:]
         self._save()
 

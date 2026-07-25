@@ -10,7 +10,7 @@ TLA_SHA     := cc4803dce2a8ffaf0f5920a9dc39df4b5ee34ab4cb53fb58ac557277a7e516b3
 
 .PHONY: help verify ci fmt fmt-fix clippy test deny terminal terminal-install \
         tla capture progress backtest analyze clean engine-report live-paper data-summary \
-        capture-5m capture-windows stack-up stack-down stack-status
+        capture-5m capture-windows stack-up stack-down stack-status archive-month
 
 help: ## Show this help
 	@echo "Targets:"
@@ -101,3 +101,12 @@ stack-down: ## Stop the full dashboard stack
 
 stack-status: ## Report health of every dashboard process
 	@scripts/run-terminal-stack.sh status
+
+archive-month: ## Archive one month of bets + market data (usage: make archive-month M=2026-07)
+	@test -n "$(M)" || { echo "usage: make archive-month M=YYYY-MM"; exit 1; }
+	@mkdir -p var/archive
+	tar -czf var/archive/poly-$(M).tar.gz \
+		$$(ls var/live-paper/bets-$(M)-*.jsonl var/research-5m/*-$(M)-*.jsonl \
+		     var/research-15m/*-$(M)-*.jsonl var/research-1h/*-$(M)-*.jsonl 2>/dev/null)
+	@echo "archived to var/archive/poly-$(M).tar.gz ($$(du -h var/archive/poly-$(M).tar.gz | cut -f1))"
+	@echo "verify the archive, then delete the originals yourself when ready."
