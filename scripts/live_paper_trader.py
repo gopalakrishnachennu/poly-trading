@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
-"""Live directional paper trader for the hourly BTC/ETH markets.
+"""Live directional paper trader for all six BTC/ETH markets (5m, 15m, 1h).
 
-Watches the read-only projection gateway in real time and runs one or more
-strategies from scripts/hourly_engine.py side by side. Each strategy keeps its
-own independent book (bankroll, open positions, settled bets) over the same
-live tape, so they can be compared honestly. Each book opens at most ONE
-simulated position per hourly market and settles it against the realised
-outcome when the hour rolls over.
+Watches the unified /api/windows feed (which merges the hourly gateway
+projection with the read-only 5m/15m short-window capture) and runs one or
+more strategies from scripts/hourly_engine.py side by side. Each strategy
+keeps its own independent book (bankroll, open positions, settled bets) over
+the same live tape, so they can be compared honestly. Each book opens at
+most ONE simulated position per (asset, window, market) and settles it
+against the realised outcome when that market rolls over.
+
+Short-window markets (5m/15m) don't publish an explicit strike — the trader
+uses the first reference price it observes within each new window as the
+strike, which is what a real algorithmic trader would do without insider
+knowledge of Polymarket's precise open snapshot.
 
 This is PAPER ONLY. It holds no credential, wallet, signer or transport, places
 no order, and moves no money — it records what each strategy *would* have done
@@ -82,9 +88,20 @@ def fetch(url: str, timeout: float):
         return None
 
 
-def to_obs(asset: dict, now_ms: int) -> Obs | None:
+def to_obs(market: dict, now_ms: int, strike_micros: float | None) -> Obs | None:
+    """Build an Obs from a /api/windows market row.
+
+    The unified feed spells fields consistently across all six markets:
+      reference_micros, up_book, down_book, end_ms, window ("5m"|"15m"|"1h").
+    Hourly markets carry an explicit strike in target_micros; short windows
+    carry None until the trader has observed a first-tick reference to
+    anchor the strike from — that anchor is passed in as strike_micros.
+    """
     try:
-        up, down = asset["up_book"], asset["down_book"]
+        up, down = market["up_book"], market["down_book"]
+        ref = market.get("reference_micros")
+        if ref is None:
+            return None  # can't score a market without a reference index
 
         def size(book, side):
             try:
@@ -92,15 +109,22 @@ def to_obs(asset: dict, now_ms: int) -> Obs | None:
             except (IndexError, TypeError, ValueError):
                 return 0.0
 
+        target = market.get("target_micros")
+        strike = float(target) if target is not None else (
+            float(strike_micros) if strike_micros is not None else float(ref)
+        )
+        end_ms = market.get("end_ms")
+        tau_ms = max(0.0, float(end_ms) - now_ms) if end_ms is not None else 0.0
+
         return Obs(
             t=now_ms,
-            s=float(asset["reference_price_micros"]),
-            k=float(asset["target_price_micros"]),
+            s=float(ref),
+            k=strike,
             up_ask=int(up["best_ask_micros"]) / DOLLAR,
             up_bid=int(up["best_bid_micros"]) / DOLLAR,
             down_ask=int(down["best_ask_micros"]) / DOLLAR,
             down_bid=int(down["best_bid_micros"]) / DOLLAR,
-            tau_ms=max(0.0, expiry_ms(now_ms) - now_ms),
+            tau_ms=tau_ms,
             up_bid_sz=size(up, "bids"), up_ask_sz=size(up, "asks"),
             down_bid_sz=size(down, "bids"), down_ask_sz=size(down, "asks"),
         )
@@ -123,6 +147,15 @@ class Book:
         return sum(1 for b in self.bets if b["won"])
 
     def report(self) -> dict:
+        # Per-window rollup so the operator can see which window(s) each strategy
+        # is winning or losing on — the whole point of running all six markets.
+        per_window: dict[str, dict] = {}
+        for bet in self.bets:
+            w = bet.get("window", "1h")
+            slot = per_window.setdefault(w, {"bets": 0, "wins": 0, "pnl": 0.0})
+            slot["bets"] += 1
+            slot["wins"] += 1 if bet["won"] else 0
+            slot["pnl"] = round(slot["pnl"] + bet["pnl"], 4)
         return {
             "strategy": self.strategy.name,
             "principal": self.principal,
@@ -130,9 +163,11 @@ class Book:
             "pnl": round(self.bankroll - self.principal, 4),
             "settled": len(self.bets),
             "wins": self.wins,
+            "per_window": per_window,
             "open_positions": [{
-                "asset": p["asset"], "market": key[1][:10], "side": p["side"],
-                "price": p["price"], "stake": p["stake"], "t": p["t"],
+                "asset": p["asset"], "window": p.get("window", "1h"),
+                "market": key[2][:10] if len(key) > 2 else key[1][:10],
+                "side": p["side"], "price": p["price"], "stake": p["stake"], "t": p["t"],
             } for key, p in self.positions.items()],
             "bets": self.bets[-40:],
         }
@@ -197,9 +232,10 @@ class LiveTrader:
 
     # ---------------- trading ----------------
     def settle(self, key, market):
-        """Resolve a finished hour for every book: Up wins if last index >= strike."""
+        """Resolve a finished market for every book: Up wins if last index >= strike."""
         last = market["obs"][-1]
         up_wins = last.s >= market["strike"]
+        window = market.get("window", "1h")
         for book in self.books:
             position = book.positions.pop(key, None)
             if not position:
@@ -208,38 +244,83 @@ class LiveTrader:
             pnl = (position["shares"] if won else 0.0) - position["stake"]
             book.bankroll += pnl
             book.bets.append({
-                "t": position["t"], "settled_t": last.t, "asset": position["asset"],
-                "market": key[1][:10], "side": position["side"],
+                "t": position["t"], "settled_t": last.t,
+                "asset": position["asset"], "window": window,
+                "market": key[2][:10] if len(key) > 2 else key[1][:10],
+                "side": position["side"],
                 "price": round(position["price"], 4), "stake": round(position["stake"], 2),
                 "won": won, "pnl": round(pnl, 4), "bankroll": round(book.bankroll, 4),
             })
-            print(f"  settled [{book.strategy.name}] {position['asset']} {position['side']} "
-                  f"@ {position['price']:.3f} -> {'WON' if won else 'LOST'} {pnl:+.2f} "
+            print(f"  settled [{book.strategy.name}] {position['asset']} {window} "
+                  f"{position['side']} @ {position['price']:.3f} -> "
+                  f"{'WON' if won else 'LOST'} {pnl:+.2f} "
                   f"(bankroll ${book.bankroll:.2f})", flush=True)
 
-    def tick(self, snapshot: dict):
+    def tick(self, feed: dict):
+        """Consume one /api/windows response and step every strategy."""
         now_ms = int(time.time() * 1000)
         live_keys = set()
-        for asset in snapshot.get("assets", []):
-            obs = to_obs(asset, now_ms)
+        for m in feed.get("markets", []):
+            asset = m.get("asset")
+            window = m.get("window", "1h")
+            cond = m.get("cond") or m.get("condition_id")
+            if not asset or not cond:
+                continue
+            # 1h rollover-cached rows (stale=true) are held over the blip for
+            # display but must not drive trading decisions — the tape is frozen.
+            if m.get("stale"):
+                key = (asset, window, cond)
+                live_keys.add(key)
+                continue
+            key = (asset, window, cond)
+            live_keys.add(key)
+
+            state = self.markets.setdefault(key, {
+                "asset": asset, "window": window, "strike": None, "obs": [],
+                "start_ms": m.get("start_ms"), "end_ms": m.get("end_ms"),
+            })
+            obs = to_obs(m, now_ms, state.get("strike"))
             if obs is None:
                 continue
-            key = (asset.get("asset"), asset.get("condition_id"))
-            live_keys.add(key)
-            market = self.markets.setdefault(key, {
-                "asset": key[0], "strike": obs.k, "obs": [],
-            })
-            market["obs"].append(obs)
-            if len(market["obs"]) > 2000:
-                market["obs"] = market["obs"][-2000:]
+            if state["strike"] is None:
+                # First tick of this market — anchor the strike from the current
+                # reference. Explicit target_micros (1h) wins; otherwise this is
+                # the honest best available approximation of the open.
+                state["strike"] = obs.k
+            state["obs"].append(obs)
+            if len(state["obs"]) > 2000:
+                state["obs"] = state["obs"][-2000:]
             self.index.append((obs.t, obs.s))
 
             rate = series_variance_rate(self.index)
+            # Scale each strategy's decision_min to this market's window length so
+            # the same strategy that fires at "1/3 through a 60m window" also
+            # fires at "1/3 through a 5m/15m window". Without this, strategies
+            # tuned for 1h markets (decision_min=20-30min) never fire on the
+            # short windows because those markets never have 20min to go.
+            start_ms = state.get("start_ms") or m.get("start_ms") or 0
+            end_ms = state.get("end_ms") or m.get("end_ms") or 0
+            market_len_ms = (end_ms - start_ms) if (end_ms and start_ms) else 0
+            scale = market_len_ms / 3_600_000 if market_len_ms > 0 else 1.0
             for book in self.books:
-                if key in book.positions or any(b["market"] == key[1][:10] for b in book.bets[-8:]):
+                mkey = cond[:10]
+                # bets written by the old (hourly-only) trader have no window
+                # field; treat their absence as "1h" so we don't accidentally
+                # re-open a position on a market that just settled.
+                if key in book.positions or any(
+                    b["market"] == mkey and b.get("window", "1h") == window
+                    for b in book.bets[-8:]
+                ):
                     continue
                 book.strategy.reset(rate)
-                decision = book.strategy.decide(market["obs"], market)
+                original_dm = getattr(book.strategy, "decision_min", None)
+                if original_dm is not None:
+                    book.strategy.decision_min = original_dm * scale
+                try:
+                    decision = book.strategy.decide(state["obs"], state)
+                finally:
+                    if original_dm is not None:
+                        book.strategy.decision_min = original_dm
                 if not decision:
                     continue
                 side, frac, price = decision
@@ -247,17 +328,19 @@ class LiveTrader:
                 if not (0 < price < 1) or stake < self.min_stake or stake > book.bankroll:
                     continue
                 book.positions[key] = {
-                    "asset": key[0], "side": side, "price": price, "stake": stake,
+                    "asset": asset, "window": window, "side": side,
+                    "price": price, "stake": stake,
                     "shares": stake / price, "t": obs.t,
                 }
-                print(f"  OPEN [{book.strategy.name}] {key[0]} {side} @ {price:.3f} "
-                      f"stake ${stake:.2f} ({(obs.tau_ms / 60000):.0f}m to expiry)", flush=True)
+                print(f"  OPEN [{book.strategy.name}] {asset} {window} {side} @ "
+                      f"{price:.3f} stake ${stake:.2f} "
+                      f"({(obs.tau_ms / 60000):.1f}m to expiry)", flush=True)
 
-        # Markets that vanished from the projection have rolled over.
-        for key, market in list(self.markets.items()):
-            if key in live_keys or not market["obs"]:
+        # Markets that vanished from the feed have rolled over.
+        for key, state in list(self.markets.items()):
+            if key in live_keys or not state["obs"] or state.get("strike") is None:
                 continue
-            self.settle(key, market)
+            self.settle(key, state)
             self.markets.pop(key, None)
         self.index = self.index[-4000:]
         self._save()
@@ -265,7 +348,9 @@ class LiveTrader:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--url", default=os.environ.get("POLY_TERMINAL_API_URL", "http://127.0.0.1:8088") + "/api/v1/terminal/snapshot")
+    default_url = os.environ.get("POLY_WINDOWS_URL", "http://127.0.0.1:3000/api/windows")
+    ap.add_argument("--url", default=default_url,
+                    help="unified /api/windows feed URL (all 6 markets)")
     ap.add_argument("--strategy", default=",".join(DEFAULT_SLATE),
                     help='comma-separated strategy names, or "all"')
     ap.add_argument("--principal", type=float, default=1000.0)
@@ -284,21 +369,21 @@ def main():
     print(f"live paper trader: {len(strategies)} book(s) @ ${args.principal:.2f} each", flush=True)
     for s in strategies:
         print(f"  - {s.name}", flush=True)
-    print(f"polling {args.url} every {args.interval:g}s", flush=True)
+    print(f"polling {args.url} every {args.interval:g}s (all 6 markets: BTC/ETH x 5m/15m/1h)", flush=True)
     print("PAPER ONLY — no credential, order, or capital authority.", flush=True)
 
     skipped = 0
     while True:
         start = time.time()
-        snapshot = fetch(args.url, args.timeout)
-        if snapshot is not None and snapshot.get("mode") == "ready":
-            trader.tick(snapshot)
+        feed = fetch(args.url, args.timeout)
+        if feed is not None and feed.get("available") is True and isinstance(feed.get("markets"), list):
+            trader.tick(feed)
         else:
             skipped += 1
             if skipped % 30 == 0:
-                mode = snapshot.get("mode") if snapshot else "unreachable"
+                reason = "unreachable" if feed is None else "no markets in feed"
                 print(f"  [{datetime.now(timezone.utc).strftime('%H:%M:%SZ')}] waiting "
-                      f"(gateway {mode})", flush=True)
+                      f"({reason})", flush=True)
         time.sleep(max(0.0, args.interval - (time.time() - start)))
 
 

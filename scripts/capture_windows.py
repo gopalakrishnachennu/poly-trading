@@ -88,6 +88,48 @@ def day_path(out_dir: str, asset: str) -> str:
     return os.path.join(out_dir, f"{asset.lower()}-{day}.jsonl")
 
 
+def load_existing_identities(out_root: str, specs) -> dict:
+    """Seed the (asset, window)->(cond, up, down) map from today's files.
+
+    Prevents rewriting a market_identity row across process restarts within
+    the same window: without this, every supervisor auto-restart would append
+    a duplicate identity for whatever market is currently open.
+    """
+    seeded: dict = {}
+    for idx, (asset, step, _slug, sub) in enumerate(specs):
+        out_dir = os.path.join(out_root, sub)
+        path = day_path(out_dir, asset)
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path) as handle:
+                for line in handle:
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        continue
+                    if row.get("k") != "sys":
+                        continue
+                    payload = row.get("payload") or {}
+                    if payload.get("event_type") != "market_identity":
+                        continue
+                    if payload.get("asset") != asset:
+                        continue
+                    start_ms = payload.get("start_time_ms")
+                    end_ms = payload.get("end_time_ms")
+                    if not isinstance(start_ms, int) or not isinstance(end_ms, int):
+                        continue
+                    if (end_ms - start_ms) // 1000 != step:
+                        continue
+                    window = start_ms // 1000
+                    seeded[idx] = (window, (payload["condition_id"],
+                                            payload["up_token_id"],
+                                            payload["down_token_id"]))
+        except OSError:
+            continue
+    return seeded
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out-root", default="var")
@@ -108,6 +150,15 @@ def main() -> None:
     latest_path = os.path.join(args.out_root, "windows-latest.json")
     rows_written = 0
     cycles = 0
+
+    # Recover state written by an earlier process so a restart does not
+    # duplicate the identity row for the market that is already open.
+    seeded = load_existing_identities(args.out_root, SPECS)
+    if seeded:
+        for idx, (window, ident) in seeded.items():
+            windows[idx] = window
+            identities[idx] = ident
+        print(f"seeded {len(seeded)} existing market identities from today's files", flush=True)
 
     def best(levels_list):
         return (levels_list[0][0] / DOLLAR) if levels_list else None

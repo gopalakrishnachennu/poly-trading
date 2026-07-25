@@ -491,9 +491,10 @@ function LiveChart({ points, target }: { points: number[]; target?: string }) {
 type EngineTrade = { t: number; asset: string; market: string; side: string; price: number; stake: number; won: boolean; pnl: number };
 type EngineStrategy = { name: string; bets: number; wins: number; pnl: number; bankroll: number; trades: EngineTrade[] };
 type EngineReport = { generated_at_ms: number; markets: number; assets: string[]; principal: number; walk_forward: boolean; strategies: EngineStrategy[] };
-type LiveBet = { t: number; settled_t: number; asset: string; market: string; side: string; price: number; stake: number; won: boolean; pnl: number; bankroll: number };
-type LiveOpen = { asset: string; market: string; side: string; price: number; stake: number; t: number };
-type LiveBook = { strategy: string; principal: number; bankroll: number; pnl: number; settled: number; wins: number; open_positions: LiveOpen[]; bets: LiveBet[] };
+type LiveBet = { t: number; settled_t: number; asset: string; window?: string; market: string; side: string; price: number; stake: number; won: boolean; pnl: number; bankroll: number };
+type LiveOpen = { asset: string; window?: string; market: string; side: string; price: number; stake: number; t: number };
+type LiveWindowStat = { bets: number; wins: number; pnl: number };
+type LiveBook = { strategy: string; principal: number; bankroll: number; pnl: number; settled: number; wins: number; open_positions: LiveOpen[]; bets: LiveBet[]; per_window?: Record<string, LiveWindowStat> };
 type LiveReport = { generated_at_ms: number; started_at_ms: number; books: LiveBook[] };
 
 type DataSet = { key: string; label: string; path: string; what: string; files: number; bytes: number; newest_ms: number | null };
@@ -1080,25 +1081,39 @@ export default function Terminal() {
               <small>{item.settled} settled · {item.settled ? Math.round(100 * item.wins / item.settled) : 0}% win{item.open_positions.length ? ` · ${item.open_positions.length} open` : ""}</small>
             </button>)}
           </div>
+          {book.per_window && Object.keys(book.per_window).length > 0 && <div className="live-window-breakdown">
+            <div className="section-label">PER-WINDOW <span>{book.strategy}</span></div>
+            <div className="live-window-grid">
+              {(["5m", "15m", "1h"] as const).map((w) => {
+                const stat = book.per_window?.[w] ?? { bets: 0, wins: 0, pnl: 0 };
+                const winRate = stat.bets ? Math.round(100 * stat.wins / stat.bets) : 0;
+                return <div key={w} className={`window-stat ${stat.pnl > 0 ? "gain" : stat.pnl < 0 ? "loss" : ""}`}>
+                  <span>{w.toUpperCase()}</span>
+                  <b className={stat.pnl >= 0 ? "positive" : "negative"}>{stat.pnl >= 0 ? "+" : ""}{stat.pnl.toFixed(2)}</b>
+                  <small>{stat.bets} bets · {winRate}% win</small>
+                </div>;
+              })}
+            </div>
+          </div>}
           <div className="live-open">
             <div className="section-label">OPEN POSITIONS <span>{book.open_positions.length}</span></div>
             {book.open_positions.length ? book.open_positions.map((p) => <div className="live-open-row" key={`${p.market}-${p.t}`}>
               <b className={p.side === "UP" ? "positive" : "negative"}>{p.side}</b>
-              <span>{p.asset} {p.market}</span><span>@ {p.price.toFixed(3)}</span><span>${p.stake.toFixed(2)}</span>
+              <span>{p.asset}{p.window ? ` ${p.window.toUpperCase()}` : ""} {p.market}</span><span>@ {p.price.toFixed(3)}</span><span>${p.stake.toFixed(2)}</span>
               <em>opened {utcTime(p.t).slice(0, 8)}</em>
             </div>) : <div className="paper-empty">NO OPEN POSITION — WAITING FOR A QUALIFYING SETUP</div>}
           </div>
           <div className="table-head engine"><span>TIME</span><span>MKT</span><span>SIDE</span><span>ENTRY</span><span>STAKE</span><span>RESULT</span><span>P&amp;L</span></div>
           <div className="engine-trades">
             {book.bets.length ? book.bets.slice().reverse().map((b) => <div className="engine-row" key={`${b.market}-${b.t}`}>
-              <time>{utcTime(b.settled_t).slice(0, 8)}</time><span>{b.asset} {b.market}</span>
+              <time>{utcTime(b.settled_t).slice(0, 8)}</time><span>{b.asset}{b.window ? ` ${b.window.toUpperCase()}` : ""} {b.market}</span>
               <b className={b.side === "UP" ? "positive" : "negative"}>{b.side}</b>
               <span>{b.price.toFixed(3)}</span><span>${b.stake.toFixed(2)}</span>
               <span className={b.won ? "positive" : "negative"}>{b.won ? "WON" : "LOST"}</span>
               <strong className={b.pnl >= 0 ? "positive" : "negative"}>{b.pnl >= 0 ? "+" : ""}{b.pnl.toFixed(2)}</strong>
-            </div>) : <div className="paper-empty">NO SETTLED BETS YET — POSITIONS SETTLE AT THE HOUR BOUNDARY</div>}
+            </div>) : <div className="paper-empty">NO SETTLED BETS YET — POSITIONS SETTLE AT THE MARKET BOUNDARY</div>}
           </div>
-          <div className="engine-note"><strong>SIMULATED MONEY ONLY</strong><span>Each strategy runs its own book over the same live tape, settled on the realised hourly outcome. No credential, wallet, signer or order path exists; nothing here moves money.</span></div>
+          <div className="engine-note"><strong>SIMULATED MONEY ONLY</strong><span>Each strategy runs its own book over the same live tape across all six markets (BTC/ETH x 5m/15m/1h), settled when each market resolves. Strategy decision timings scale to window length. No credential, wallet, signer or order path exists; nothing here moves money.</span></div>
         </div> : <div className="paper-empty">{livePaperReason}</div>}
       </Panel>
   );
