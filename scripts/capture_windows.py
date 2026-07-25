@@ -34,6 +34,10 @@ from datetime import datetime, timezone
 
 GAMMA = "https://gamma-api.polymarket.com/events?slug="
 CLOB = "https://clob.polymarket.com/book?token_id="
+# Local gateway snapshot — the authoritative 1h source. The gateway already
+# discovers, validates, and de-dupes the current-hour BTC/ETH markets; polling
+# it means we don't need to re-implement date-based hourly-slug discovery here.
+GATEWAY_SNAPSHOT = "http://127.0.0.1:8088/api/v1/terminal/snapshot"
 UA = {"User-Agent": "poly-trading research read-only market data"}
 DOLLAR = 1_000_000
 
@@ -44,6 +48,9 @@ SPECS = [
     ("BTC", 900, "btc-updown-15m", "research-15m"),
     ("ETH", 900, "eth-updown-15m", "research-15m"),
 ]
+
+HOURLY_ASSETS = ("BTC", "ETH")
+HOURLY_SUB = "research-1h"
 
 
 def get(url: str, timeout: float):
@@ -140,8 +147,9 @@ def main() -> None:
 
     for _, _, _, sub in SPECS:
         os.makedirs(os.path.join(args.out_root, sub), exist_ok=True)
-    print("capturing BTC+ETH 5m & 15m markets every "
-          f"{args.interval:g}s -> {args.out_root}/research-{{5m,15m}}/", flush=True)
+    os.makedirs(os.path.join(args.out_root, HOURLY_SUB), exist_ok=True)
+    print("capturing BTC+ETH 5m/15m/1h markets every "
+          f"{args.interval:g}s -> {args.out_root}/research-{{5m,15m,1h}}/", flush=True)
     print("PUBLIC READ-ONLY — no credential, wallet, signer or order path.", flush=True)
 
     windows: dict[int, int] = {}       # spec index -> current window start
@@ -163,8 +171,83 @@ def main() -> None:
     def best(levels_list):
         return (levels_list[0][0] / DOLLAR) if levels_list else None
 
+    # Track the 1h condition_id currently open per asset so we only write the
+    # market_identity row once per hourly rollover (matches the 5m/15m dedup).
+    hourly_current: dict[str, str] = {}
+
+    def capture_hourly(out_root: str, asset_names) -> None:
+        """Persist 1h book snapshots by reading the local projection gateway.
+
+        Uses the same on-disk schema as 5m/15m so downstream tools that scan
+        `research-*` treat all three window sizes identically. Silently no-ops
+        when the gateway isn't ready — the gateway itself is fail-closed and
+        will only publish valid, digest-checked books.
+        """
+        snap = get(GATEWAY_SNAPSHOT, args.timeout)
+        if not snap or snap.get("mode") != "ready":
+            return
+        out_dir = os.path.join(out_root, HOURLY_SUB)
+        now_ns = time.time_ns()
+        for a in snap.get("assets", []):
+            asset_name = a.get("asset")
+            if asset_name not in asset_names:
+                continue
+            cond = a.get("condition_id")
+            up_tok = a.get("up_book", {}).get("token_id")
+            down_tok = a.get("down_book", {}).get("token_id")
+            start_ms = a.get("start_time_ms")
+            end_ms = a.get("end_time_ms")
+            if not all((cond, up_tok, down_tok, start_ms, end_ms)):
+                continue
+            path = day_path(out_dir, asset_name)
+            if hourly_current.get(asset_name) != cond:
+                hourly_current[asset_name] = cond
+                # Only write identity if not already present for this cond in today's file.
+                already = False
+                if os.path.exists(path):
+                    try:
+                        with open(path) as h:
+                            for line in h:
+                                if f'"condition_id":"{cond}"' in line:
+                                    already = True
+                                    break
+                    except OSError:
+                        pass
+                if not already:
+                    with open(path, "a") as h:
+                        h.write(json.dumps({
+                            "k": "sys",
+                            "payload": {
+                                "event_type": "market_identity", "asset": asset_name,
+                                "condition_id": cond, "up_token_id": up_tok,
+                                "down_token_id": down_tok,
+                                "start_time_ms": start_ms, "end_time_ms": end_ms,
+                            },
+                        }, separators=(",", ":")) + "\n")
+            # Book rows in the same schema the 5m/15m capture emits.
+            def levels_from_gateway(book, key):
+                out = []
+                for row in book.get(key, [])[:args.depth]:
+                    try:
+                        px = int(row["price_micros"]); sz = int(row["quantity_micros"])
+                        out.append([px, sz])
+                    except (KeyError, ValueError, TypeError):
+                        continue
+                return out
+            for token, book in ((up_tok, a["up_book"]), (down_tok, a["down_book"])):
+                bids = levels_from_gateway(book, "bids")
+                asks = levels_from_gateway(book, "asks")
+                if not bids and not asks:
+                    continue
+                with open(path, "a") as h:
+                    h.write(json.dumps({
+                        "k": "book", "tok": token, "cond": cond,
+                        "t": now_ns, "bids": bids, "asks": asks,
+                    }, separators=(",", ":")) + "\n")
+
     while True:
         start = time.time()
+        capture_hourly(args.out_root, HOURLY_ASSETS)
         for idx, (asset, step, slug_prefix, sub) in enumerate(SPECS):
             window = int(time.time()) // step * step
             out_dir = os.path.join(args.out_root, sub)

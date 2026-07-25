@@ -187,6 +187,24 @@ class LiveTrader:
         self.report_path = os.path.join(out_dir, "report.json")
         self._load()
 
+    # ---------------- immutable bets log ----------------
+    def _append_bet_log(self, bet: dict) -> None:
+        """Append a settled bet to today's immutable daily log.
+
+        Complements state.json (which caps recent bets for memory) with a
+        never-trimmed research record. Bets are keyed by full condition_id
+        so they can be joined back to var/research-{5m,15m}/*.jsonl market
+        data by external analysis.
+        """
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        path = os.path.join(self.out_dir, f"bets-{day}.jsonl")
+        try:
+            with open(path, "a") as h:
+                h.write(json.dumps(bet, separators=(",", ":")) + "\n")
+                h.flush()
+        except OSError:
+            pass  # non-fatal — state.json is still authoritative for the UI
+
     # ---------------- persistence ----------------
     def _load(self):
         try:
@@ -236,6 +254,16 @@ class LiveTrader:
         last = market["obs"][-1]
         up_wins = last.s >= market["strike"]
         window = market.get("window", "1h")
+        cond = key[2] if len(key) > 2 else key[1]
+        # Full close snapshot — evidence for the settlement decision. Combined
+        # with open_obs on the position, every bet is self-contained: you can
+        # answer "why open, why win/loss" without re-scanning market data.
+        close_obs = {
+            "up_ask": round(last.up_ask, 6), "up_bid": round(last.up_bid, 6),
+            "down_ask": round(last.down_ask, 6), "down_bid": round(last.down_bid, 6),
+            "reference_micros": last.s, "strike_micros": market["strike"],
+            "tau_ms": last.tau_ms,
+        }
         for book in self.books:
             position = book.positions.pop(key, None)
             if not position:
@@ -243,13 +271,32 @@ class LiveTrader:
             won = (position["side"] == "UP") == up_wins
             pnl = (position["shares"] if won else 0.0) - position["stake"]
             book.bankroll += pnl
-            book.bets.append({
+            # UI-facing (kept small): what the terminal renders.
+            compact = {
                 "t": position["t"], "settled_t": last.t,
                 "asset": position["asset"], "window": window,
-                "market": key[2][:10] if len(key) > 2 else key[1][:10],
+                "market": cond[:10],
                 "side": position["side"],
                 "price": round(position["price"], 4), "stake": round(position["stake"], 2),
                 "won": won, "pnl": round(pnl, 4), "bankroll": round(book.bankroll, 4),
+            }
+            book.bets.append(compact)
+            # Immutable research record: full condition_id, open/close snapshots,
+            # strike, strategy, principal, and every intermediate value that lets
+            # us re-derive the bet's rationale independently of any other file.
+            self._append_bet_log({
+                **compact,
+                "condition_id": cond,
+                "strategy": book.strategy.name,
+                "principal": book.principal,
+                "shares": position["shares"],
+                "start_ms": position.get("start_ms"),
+                "end_ms": position.get("end_ms"),
+                "strike_micros": position.get("strike_micros"),
+                "open_obs": position.get("open_obs"),
+                "close_obs": close_obs,
+                "up_wins": up_wins,
+                "logged_at_ms": int(time.time() * 1000),
             })
             print(f"  settled [{book.strategy.name}] {position['asset']} {window} "
                   f"{position['side']} @ {position['price']:.3f} -> "
@@ -327,10 +374,26 @@ class LiveTrader:
                 stake = min(book.bankroll, max(self.min_stake, frac * book.bankroll))
                 if not (0 < price < 1) or stake < self.min_stake or stake > book.bankroll:
                     continue
+                # Full observation snapshot at open. This is the evidence
+                # for "why did the strategy trigger this bet?" — you can read
+                # it back later without needing to replay the market tape.
+                open_obs = {
+                    "up_ask": round(obs.up_ask, 6), "up_bid": round(obs.up_bid, 6),
+                    "down_ask": round(obs.down_ask, 6), "down_bid": round(obs.down_bid, 6),
+                    "reference_micros": obs.s, "strike_micros": obs.k,
+                    "tau_ms": obs.tau_ms,
+                    "up_bid_sz": obs.up_bid_sz, "up_ask_sz": obs.up_ask_sz,
+                    "down_bid_sz": obs.down_bid_sz, "down_ask_sz": obs.down_ask_sz,
+                    "variance_rate": rate,
+                }
                 book.positions[key] = {
                     "asset": asset, "window": window, "side": side,
                     "price": price, "stake": stake,
                     "shares": stake / price, "t": obs.t,
+                    "condition_id": cond,
+                    "start_ms": state.get("start_ms"), "end_ms": state.get("end_ms"),
+                    "strike_micros": state["strike"],
+                    "open_obs": open_obs,
                 }
                 print(f"  OPEN [{book.strategy.name}] {asset} {window} {side} @ "
                       f"{price:.3f} stake ${stake:.2f} "
