@@ -65,36 +65,70 @@ type GatewayAsset = {
   up_book: MarketBook; down_book: MarketBook;
   pair: { buy_pair_cost_micros: string; raw_gap_micros: string; executable_quantity_micros: string };
 };
+type GatewayAssets = Map<"BTC" | "ETH", GatewayAsset>;
 
 // Hard cap on the gateway fetch — without it, an unresponsive gateway
 // (SIGSTOP, network hang) blocks every /api/windows request indefinitely and
 // wedges the whole terminal. On timeout we fall through to the hourly cache.
 const GATEWAY_FETCH_TIMEOUT_MS = 2_500;
 
-async function gatewayAssets(): Promise<Map<string, GatewayAsset>> {
-  const map = new Map<string, GatewayAsset>();
+function isMicros(value: unknown): value is string {
+  return typeof value === "string" && /^-?\d+$/.test(value);
+}
+
+function isBook(value: unknown): value is MarketBook {
+  if (!value || typeof value !== "object") return false;
+  const book = value as Partial<MarketBook>;
+  const levelsOkay = (levels: unknown) => Array.isArray(levels) && levels.length > 0 && levels.every((level) =>
+    Boolean(level) && typeof level === "object" && isMicros((level as Level).price_micros) &&
+    isMicros((level as Level).quantity_micros));
+  return levelsOkay(book.bids) && levelsOkay(book.asks) && isMicros(book.best_bid_micros) &&
+    isMicros(book.best_ask_micros) && isMicros(book.tick_size_micros);
+}
+
+function asAtomicGatewayAssets(value: unknown): GatewayAssets | undefined {
+  if (!Array.isArray(value) || value.length !== 2) return undefined;
+  const assets: GatewayAssets = new Map();
+  for (const candidate of value) {
+    if (!candidate || typeof candidate !== "object") return undefined;
+    const asset = candidate as Partial<GatewayAsset>;
+    const startMs = asset.start_time_ms;
+    const endMs = asset.end_time_ms;
+    if ((asset.asset !== "BTC" && asset.asset !== "ETH") || assets.has(asset.asset) ||
+        typeof startMs !== "number" || typeof endMs !== "number" ||
+        !Number.isSafeInteger(startMs) || !Number.isSafeInteger(endMs) || startMs >= endMs ||
+        typeof asset.condition_id !== "string" ||
+        !isMicros(asset.reference_price_micros) || !isMicros(asset.target_price_micros) ||
+        !isBook(asset.up_book) || !isBook(asset.down_book) || !asset.pair ||
+        !isMicros(asset.pair.buy_pair_cost_micros) || !isMicros(asset.pair.raw_gap_micros) ||
+        !isMicros(asset.pair.executable_quantity_micros)) return undefined;
+    assets.set(asset.asset, asset as GatewayAsset);
+  }
+  return assets.size === 2 && assets.has("BTC") && assets.has("ETH") ? assets : undefined;
+}
+
+async function gatewayAssets(): Promise<GatewayAssets | undefined> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), GATEWAY_FETCH_TIMEOUT_MS);
   try {
     const response = await fetch(`${API}/api/v1/terminal/snapshot`, {
       cache: "no-store", signal: controller.signal,
     });
-    if (!response.ok) return map;
+    if (!response.ok) return undefined;
     const snap = await response.json() as { mode?: string; assets?: GatewayAsset[] };
-    if (snap.mode !== "ready" || !Array.isArray(snap.assets)) return map;
-    for (const asset of snap.assets) map.set(asset.asset, asset);
-  } catch { /* gateway unavailable, timeout, or malformed body */ }
+    if (snap.mode !== "ready") return undefined;
+    return asAtomicGatewayAssets(snap.assets);
+  } catch { /* gateway unavailable, timeout, or malformed body */ return undefined; }
   finally { clearTimeout(timer); }
-  return map;
 }
 
-// Per-asset cache of the last-good hourly frame, held across the top-of-hour
-// rollover blip (empty book side while MMs pull orders at resolution). Never
-// served past the market's own end_time_ms, and capped at 90 s of staleness
-// so we don't silently show old prices if the gateway is really down.
+// The last-good hourly frame is held across the top-of-hour rollover blip as
+// one BTC+ETH pair. Per-asset caching could combine a fresh BTC market with a
+// stale ETH market, which is not a coherent terminal frame. It is never served
+// past either market's own end_time_ms and is capped at 90 s of staleness.
 const HOURLY_CACHE_TTL_MS = 90_000;
-type CachedHourly = { asset: GatewayAsset; cached_at_ms: number };
-const hourlyCache = new Map<string, CachedHourly>();
+type CachedHourlyPair = { assets: GatewayAssets; cached_at_ms: number };
+let hourlyCache: CachedHourlyPair | undefined;
 
 export async function GET() {
   const path = process.env.POLY_WINDOWS_SNAPSHOT_PATH
@@ -120,7 +154,7 @@ export async function GET() {
         const downBids = toLevels(m.down_bids), downAsks = toLevels(m.down_asks);
         markets.push({
           asset: m.asset, window: m.window, cond: m.cond, start_ms: m.start_ms, end_ms: m.end_ms, t_ms: m.t_ms,
-          reference_micros: gateway.get(m.asset)?.reference_price_micros ?? null, target_micros: null,
+          reference_micros: gateway?.get(m.asset as "BTC" | "ETH")?.reference_price_micros ?? null, target_micros: null,
           up_book: book(upBids, upAsks, "10000"), down_book: book(downBids, downAsks, "10000"),
           pair: pairEconomics(upAsks, downAsks),
         });
@@ -131,32 +165,29 @@ export async function GET() {
 
   // Hourly (1h) from the projection gateway — with rollover-blip carry-over.
   const now = Date.now();
-  const seenAssets = new Set<string>();
-  for (const asset of gateway.values()) {
-    hourlyCache.set(asset.asset, { asset, cached_at_ms: now });
-    seenAssets.add(asset.asset);
-    markets.push({
-      asset: asset.asset, window: "1h", cond: asset.condition_id, start_ms: asset.start_time_ms, end_ms: asset.end_time_ms, t_ms: now,
-      reference_micros: asset.reference_price_micros, target_micros: asset.target_price_micros,
-      up_book: asset.up_book, down_book: asset.down_book, pair: asset.pair,
-    });
-  }
-  // Gateway didn't return this asset this cycle — held it over the blip if the
-  // cached market still exists (before its own end_time) and cache is fresh.
-  for (const [assetName, cached] of hourlyCache) {
-    if (seenAssets.has(assetName)) continue;
-    const ageMs = now - cached.cached_at_ms;
-    if (ageMs > HOURLY_CACHE_TTL_MS || now >= cached.asset.end_time_ms) {
-      hourlyCache.delete(assetName);
-      continue;
+  if (gateway) {
+    hourlyCache = { assets: gateway, cached_at_ms: now };
+    for (const asset of gateway.values()) {
+      markets.push({
+        asset: asset.asset, window: "1h", cond: asset.condition_id, start_ms: asset.start_time_ms, end_ms: asset.end_time_ms, t_ms: now,
+        reference_micros: asset.reference_price_micros, target_micros: asset.target_price_micros,
+        up_book: asset.up_book, down_book: asset.down_book, pair: asset.pair,
+      });
     }
-    const a = cached.asset;
-    markets.push({
-      asset: a.asset, window: "1h", cond: a.condition_id, start_ms: a.start_time_ms, end_ms: a.end_time_ms, t_ms: cached.cached_at_ms,
-      reference_micros: a.reference_price_micros, target_micros: a.target_price_micros,
-      up_book: a.up_book, down_book: a.down_book, pair: a.pair,
-      stale: true, stale_age_ms: ageMs,
-    });
+  } else if (hourlyCache) {
+    const ageMs = now - hourlyCache.cached_at_ms;
+    const cacheUsable = ageMs <= HOURLY_CACHE_TTL_MS && [...hourlyCache.assets.values()].every((asset) => now < asset.end_time_ms);
+    if (!cacheUsable) {
+      hourlyCache = undefined;
+    } else {
+      for (const asset of hourlyCache.assets.values()) {
+        markets.push({
+          asset: asset.asset, window: "1h", cond: asset.condition_id, start_ms: asset.start_time_ms, end_ms: asset.end_time_ms, t_ms: now,
+          reference_micros: asset.reference_price_micros, target_micros: asset.target_price_micros,
+          up_book: asset.up_book, down_book: asset.down_book, pair: asset.pair, stale: true, stale_age_ms: ageMs,
+        });
+      }
+    }
   }
 
   const order = { "5m": 0, "15m": 1, "1h": 2 } as const;
@@ -167,7 +198,7 @@ export async function GET() {
     generated_at_ms: Date.now(),
     short_capture_age_ms: shortAgeMs,
     short_capture_live: shortLive,
-    gateway_ready: gateway.size > 0,
+    gateway_ready: gateway !== undefined,
     markets,
     note: "Observation only. Read-only public data; no order, credential or execution authority.",
   });

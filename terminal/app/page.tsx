@@ -491,11 +491,97 @@ function LiveChart({ points, target }: { points: number[]; target?: string }) {
 type EngineTrade = { t: number; asset: string; market: string; side: string; price: number; stake: number; won: boolean; pnl: number };
 type EngineStrategy = { name: string; bets: number; wins: number; pnl: number; bankroll: number; trades: EngineTrade[] };
 type EngineReport = { generated_at_ms: number; markets: number; assets: string[]; principal: number; walk_forward: boolean; strategies: EngineStrategy[] };
-type LiveBet = { t: number; settled_t: number; asset: string; window?: string; market: string; side: string; price: number; stake: number; won: boolean; pnl: number; bankroll: number };
-type LiveOpen = { asset: string; window?: string; market: string; side: string; price: number; stake: number; t: number };
-type LiveWindowStat = { bets: number; wins: number; pnl: number };
-type LiveBook = { strategy: string; principal: number; bankroll: number; pnl: number; settled: number; wins: number; open_positions: LiveOpen[]; bets: LiveBet[]; per_window?: Record<string, LiveWindowStat> };
-type LiveReport = { generated_at_ms: number; started_at_ms: number; books: LiveBook[] };
+
+// Historical intraday mean-reversion tracker.
+// Simulated positions in the UP/DOWN tokens themselves — bought when the ask
+// crosses the buy_threshold, sold when the bid crosses sell_threshold. Not
+// buy-and-hold-to-resolution. Paper only.
+type IntradayOpen = { asset: string; window: string; cond: string;
+  side_token: string; entry_price: number; stake: number;
+  opened_ms: number; last_bid?: number };
+type IntradaySettled = { asset: string; window: string; condition_id: string;
+  side_token: string; opened_ms: number; closed_ms: number; held_ms?: number;
+  entry_price: number; exit_price: number; stake: number; shares?: number;
+  pnl: number; won: boolean; bankroll_after: number; exit_reason: string };
+type IntradayCell = { bets: number; wins: number; pnl: number };
+type IntradayReport = {
+  generated_at_ms: number; started_at_ms: number;
+  principal: number; bankroll: number; mark_to_market?: number;
+  pnl: number; mtm_pnl?: number;
+  settled: number; wins: number;
+  buy_threshold: number; sell_threshold: number; windows: string[];
+  per_window?: Record<string, IntradayCell>;
+  per_asset?: Record<string, IntradayCell>;
+  per_cell?: Record<string, IntradayCell>;
+  bankroll_series?: [number, number][];
+  open_positions: IntradayOpen[]; recent_settled: IntradaySettled[];
+};
+type IntradayApiResponse = {
+  available: boolean; reason?: string; report?: IntradayReport;
+  strategy_status?: "RETIRED_NEGATIVE_OOS";
+  strategy_reason?: string;
+};
+
+// Profit engine — walk-forward comparison of market/logistic/lightgbm on the
+// captured tape. Produced by scripts/profit_engine/run_pipeline.py.
+type ProfitEngineModelStat = {
+  n_folds: number; brier_mean: number; brier_median: number;
+  log_loss_mean: number; ece_mean: number;
+};
+type ProfitEngineFold = {
+  fold: number; train: number; val: number; test: number; test_rows: number;
+  test_positive_rate: number;
+  brier: Record<string, number>;
+};
+type ProfitEngineReport = {
+  generated_at_ms: number; duration_ms: number;
+  window?: "5m" | "15m" | "1h";
+  revision?: string;
+  local_completed_sessions?: number;
+  dataset_sessions?: number;
+  classifier_verdict?: string;
+  net_value_verdict?: string;
+  paper_admission_status?: "NO_ELIGIBLE_MODEL" | "AUTO_ADMITTED_PAPER_ONLY";
+  automatic_activation?: false;
+  sources: { polymarket_files: number; external_files: number; total_bytes: number };
+  features?: { rows_written: number };
+  labels?: { rows_in: number; rows_with_resolution: number;
+             resolved_contracts: number;
+             share_up_profitable: number; share_down_profitable: number };
+  y_key?: string;
+  walk_forward?: {
+    n_folds: number;
+    models?: string[];
+    means?: Record<string, ProfitEngineModelStat>;
+    best_per_fold?: string[];
+    folds?: ProfitEngineFold[];
+    error?: string;
+  };
+  verdict: string;
+};
+
+function BankrollSpark({ series, principal }:
+    { series: [number, number][]; principal: number }) {
+  if (!series || series.length < 2) return null;
+  const w = 340, h = 60, pad = 4;
+  const values = series.map(([, v]) => v);
+  const min = Math.min(principal, ...values);
+  const max = Math.max(principal, ...values);
+  const range = max === min ? 1 : max - min;
+  const xs = (i: number) => pad + (w - 2 * pad) * (i / (series.length - 1));
+  const ys = (v: number) => h - pad - ((v - min) / range) * (h - 2 * pad);
+  const points = series.map(([, v], i) => `${xs(i).toFixed(1)},${ys(v).toFixed(1)}`).join(" ");
+  const baseline = ys(principal).toFixed(1);
+  const last = values[values.length - 1];
+  const gain = last >= principal;
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" className="bankroll-spark" role="img" aria-label="bankroll timeline">
+      <line x1={pad} x2={w - pad} y1={baseline} y2={baseline} className="spark-baseline" strokeDasharray="3 3" />
+      <polyline fill="none" className={gain ? "spark-line gain" : "spark-line loss"} points={points} />
+      <circle cx={xs(series.length - 1)} cy={ys(last)} r="2.5" className={gain ? "spark-dot gain" : "spark-dot loss"} />
+    </svg>
+  );
+}
 
 type DataSet = { key: string; label: string; path: string; what: string; files: number; bytes: number; newest_ms: number | null };
 type DataSummary = { generated_at_ms: number; files_scanned: number; markets_total: number; markets_usable: number; min_span_min: number; target_min: number; target_good: number; by_asset: Record<string, number>; by_day: Record<string, number>; first_market_ms: number | null; last_market_ms: number | null };
@@ -528,9 +614,12 @@ export default function Terminal() {
   const [engine, setEngine] = useState<EngineReport | null>(null);
   const [engineReason, setEngineReason] = useState("loading offline engine report");
   const [engineStrategy, setEngineStrategy] = useState(0);
-  const [livePaper, setLivePaper] = useState<LiveReport | null>(null);
-  const [livePaperReason, setLivePaperReason] = useState("loading live paper trader");
-  const [liveBook, setLiveBook] = useState(0);
+  const [intraday, setIntraday] = useState<IntradayReport | null>(null);
+  const [intradayReason, setIntradayReason] = useState("loading paper intraday tracker");
+  const [intradayStrategyStatus, setIntradayStrategyStatus] = useState("OFFLINE");
+  const [intradayStrategyReason, setIntradayStrategyReason] = useState("");
+  const [profitEngine, setProfitEngine] = useState<ProfitEngineReport | null>(null);
+  const [profitEngineReason, setProfitEngineReason] = useState("loading profit engine report");
   const [dataReport, setDataReport] = useState<DataReport | null>(null);
   const [windows, setWindows] = useState<WindowsReport | null>(null);
   const [windowsMessage, setWindowsMessage] = useState("loading short-window markets");
@@ -890,20 +979,50 @@ export default function Terminal() {
     return () => { disposed = true; window.clearInterval(timer); };
   }, []);
 
-  // Live directional paper trader (simulated positions against the live tape).
+  // Paper intraday mean-reversion tracker — companion to the directional
+  // trader. Simulated buy-low-sell-high on UP/DOWN tokens; never touches
+  // resolution outcomes. Reads /api/live-paper-intraday.
   useEffect(() => {
     let disposed = false;
     const read = async () => {
       try {
-        const response = await fetch("/api/live-paper", { cache: "no-store" });
-        const payload = await response.json() as { available: boolean; reason?: string; report?: LiveReport };
+        const response = await fetch("/api/live-paper-intraday", { cache: "no-store" });
+        const payload = await response.json() as IntradayApiResponse;
         if (disposed) return;
-        if (payload.available && payload.report) { setLivePaper(payload.report); setLivePaperReason(""); }
-        else { setLivePaper(null); setLivePaperReason(payload.reason ?? "live paper trader unavailable"); }
-      } catch { if (!disposed) setLivePaperReason("live paper trader unavailable"); }
+        if (payload.available && payload.report) {
+          setIntraday(payload.report);
+          setIntradayReason("");
+          setIntradayStrategyStatus(payload.strategy_status ?? "HISTORICAL");
+          setIntradayStrategyReason(payload.strategy_reason ?? "");
+        } else {
+          setIntraday(null);
+          setIntradayReason(payload.reason ?? "intraday tracker unavailable");
+          setIntradayStrategyStatus("OFFLINE");
+          setIntradayStrategyReason("");
+        }
+      } catch { if (!disposed) setIntradayReason("intraday tracker unavailable"); }
     };
     void read();
     const timer = window.setInterval(read, 5_000);
+    return () => { disposed = true; window.clearInterval(timer); };
+  }, []);
+
+  // Profit-engine walk-forward report — refreshed slowly since the pipeline
+  // itself rebuilds features + labels + walks ~14 folds each run (~15s
+  // wall-clock). No point polling faster than the underlying schedule.
+  useEffect(() => {
+    let disposed = false;
+    const read = async () => {
+      try {
+        const response = await fetch("/api/profit-engine", { cache: "no-store" });
+        const payload = await response.json() as { available: boolean; reason?: string; report?: ProfitEngineReport };
+        if (disposed) return;
+        if (payload.available && payload.report) { setProfitEngine(payload.report); setProfitEngineReason(""); }
+        else { setProfitEngine(null); setProfitEngineReason(payload.reason ?? "profit engine unavailable"); }
+      } catch { if (!disposed) setProfitEngineReason("profit engine unavailable"); }
+    };
+    void read();
+    const timer = window.setInterval(read, 30_000);
     return () => { disposed = true; window.clearInterval(timer); };
   }, []);
 
@@ -996,7 +1115,7 @@ export default function Terminal() {
   );
   const marketMid = asset ? (Number(asset.up_book.best_bid_micros) + Number(asset.up_book.best_ask_micros)) / 2 / 1_000_000 : null;
   const pNeural = (
-      <Panel code="N1" title={`NEURAL DECISION MODEL / ${selected}`} className="neural-panel" action={<span className="badge-safe unavailable">OBSERVATION ONLY</span>}>
+      <Panel code="N1" title={`REAL-TIME MODEL OBSERVATION / ${selected}`} className="neural-panel" action={<span className="badge-safe unavailable">{profitEngine ? `HOURLY ${profitEngine.verdict}` : "HOURLY MODEL LOADING"}</span>}>
         <div className="neural-stage"><NeuralGraph signal={signal} tone={statusTone} labels={NEURAL_IO_LABELS}/></div>
         <div className="neural-stats">
           <div><span>MODEL CALL</span><b className={signal ? (signal.side === "UP" ? "positive" : "negative") : ""}>{signal ? (signal.confidence < 0.2 ? "HOLD" : `LEAN ${signal.side}`) : "HOLD"}</b></div>
@@ -1005,7 +1124,9 @@ export default function Terminal() {
           <div><span>EDGE VS MARKET</span><b className={signal ? (signal.edge >= 0 ? "positive" : "negative") : ""}>{signal ? `${signal.edge >= 0 ? "+" : ""}${(signal.edge * 100).toFixed(1)}%` : "—"}</b></div>
           <div><span>CONFIDENCE</span><b>{signal ? `${(signal.confidence * 100).toFixed(0)}%` : "—"}</b></div>
           <div><span>TIME TO EXPIRY</span><b>{remainingText}</b></div>
-          <div className="neural-note"><strong>TELEMETRY ONLY</strong><span>Fair-value model observation from public data. No order, signer, capital or execution authority. Model is unvalidated: an edge requires out-of-sample evidence across many markets.</span></div>
+          <div><span>HOURLY DATASET</span><b>{profitEngine ? `${profitEngine.dataset_sessions ?? profitEngine.labels?.resolved_contracts ?? 0} SESSIONS` : "LOADING"}</b></div>
+          <div><span>MODEL GATE</span><b className={profitEngine?.verdict === "NO_TRADE" || profitEngine?.verdict === "NO_MODEL_BEATS_BASELINE" || profitEngine?.verdict === "INSUFFICIENT_DATA" ? "negative" : ""}>{profitEngine?.verdict?.replace(/_/g, " ") ?? "NO ARTIFACT"}</b></div>
+          <div className="neural-note"><strong>MODEL STATUS</strong><span>This live signal is public-data telemetry, not a trained trading model. The BTC one-hour artifact and its walk-forward evidence are shown below. No order, signer, capital or execution authority exists.</span></div>
         </div>
       </Panel>
   );
@@ -1068,24 +1189,40 @@ export default function Terminal() {
         </div>
       </Panel>
   );
-  const book = livePaper?.books[Math.min(liveBook, (livePaper.books.length || 1) - 1)];
-  const openCount = livePaper?.books.reduce((total, b) => total + b.open_positions.length, 0) ?? 0;
   const pLive = (
-      <Panel code="L1" title="LIVE PAPER TRADER / DIRECTIONAL" className="engine-panel"
-             action={<span className="badge-safe unavailable">{livePaper ? `LIVE · ${openCount} OPEN` : "OFFLINE"}</span>}>
-        {livePaper && book ? <div className="engine-body">
-          <div className="engine-meta"><span>{livePaper.books.length} BOOKS · ${book.principal.toFixed(0)} EACH</span><span>SINCE {utcTime(livePaper.started_at_ms).slice(0, 8)} · {utcTime(livePaper.generated_at_ms).slice(0, 8)}</span></div>
-          <div className="engine-strategies">
-            {livePaper.books.map((item, index) => <button key={item.strategy} className={index === liveBook ? "active" : ""} onClick={() => setLiveBook(index)}>
-              <span>{item.strategy}</span><b className={item.pnl >= 0 ? "positive" : "negative"}>{item.pnl >= 0 ? "+" : ""}{item.pnl.toFixed(2)}</b>
-              <small>{item.settled} settled · {item.settled ? Math.round(100 * item.wins / item.settled) : 0}% win{item.open_positions.length ? ` · ${item.open_positions.length} open` : ""}</small>
-            </button>)}
+      <Panel code="L1" title="LEGACY DIRECTIONAL SIMULATOR / RETIRED" className="engine-panel"
+             action={<span className="badge-safe unavailable">NO ACTIVE PAPER AUTHORITY</span>}>
+        <div className="engine-body">
+          <div className="paper-empty">Retired: use the core-backed Paper Week campaign.</div>
+          <div className="engine-note"><strong>CORE PATH ONLY</strong><span>The retired simulator used separate floating-point bankrolls and bypassed the fixed-point ledger, scenario risk, reservations, execution lifecycle and reconciliation. Historical files are preserved but are not an active account.</span></div>
+        </div>
+      </Panel>
+  );
+  const pIntraday = (
+      <Panel code="L2" title="PAPER INTRADAY / MEAN-REVERSION" className="engine-panel"
+             action={<span className="badge-safe unavailable">{intraday ? intradayStrategyStatus.replace(/_/g, " ") : "OFFLINE"}</span>}>
+        {intraday ? <div className="engine-body">
+          <div className="engine-meta">
+            <span>HISTORICAL SIMULATION · ${intraday.principal.toFixed(0)} START · {intraday.windows.join("/")}</span>
+            <span>LAST RECORDED {utcTime(intraday.generated_at_ms).slice(0, 8)} · NEW ENTRIES DISABLED</span>
           </div>
-          {book.per_window && Object.keys(book.per_window).length > 0 && <div className="live-window-breakdown">
-            <div className="section-label">PER-WINDOW <span>{book.strategy}</span></div>
+          <div className="engine-note"><strong>{intradayStrategyStatus.replace(/_/g, " ")}</strong><span>{intradayStrategyReason || "Historical paper evidence only; this is not an approved strategy."}</span></div>
+          <div className="live-summary">
+            <div><span>HISTORICAL BANKROLL</span><b>{`$${intraday.bankroll.toFixed(2)}`}</b></div>
+            <div><span>HISTORICAL MARK-TO-MARKET</span><b className={(intraday.mtm_pnl ?? intraday.pnl) >= 0 ? "positive" : "negative"}>{(intraday.mtm_pnl ?? intraday.pnl) >= 0 ? "+" : ""}{(intraday.mtm_pnl ?? intraday.pnl).toFixed(2)}</b></div>
+            <div><span>HISTORICAL REALIZED P&amp;L</span><b className={intraday.pnl >= 0 ? "positive" : "negative"}>{intraday.pnl >= 0 ? "+" : ""}{intraday.pnl.toFixed(2)}</b></div>
+            <div><span>SETTLED</span><b>{intraday.settled}</b></div>
+            <div><span>WIN RATE</span><b>{intraday.settled ? `${Math.round(100 * intraday.wins / intraday.settled)}%` : "—"}</b></div>
+          </div>
+          {intraday.bankroll_series && intraday.bankroll_series.length >= 2 && <div className="intraday-chart-block">
+            <div className="section-label">BANKROLL (mark-to-market, includes open positions) <span>${intraday.principal.toFixed(0)} start · dashed = principal</span></div>
+            <BankrollSpark series={intraday.bankroll_series} principal={intraday.principal} />
+          </div>}
+          {intraday.per_window && Object.keys(intraday.per_window).length > 0 && <div className="live-window-breakdown">
+            <div className="section-label">PER-WINDOW <span>settled bets only</span></div>
             <div className="live-window-grid">
-              {(["5m", "15m", "1h"] as const).map((w) => {
-                const stat = book.per_window?.[w] ?? { bets: 0, wins: 0, pnl: 0 };
+              {(intraday.windows).map((w) => {
+                const stat = intraday.per_window?.[w] ?? { bets: 0, wins: 0, pnl: 0 };
                 const winRate = stat.bets ? Math.round(100 * stat.wins / stat.bets) : 0;
                 return <div key={w} className={`window-stat ${stat.pnl > 0 ? "gain" : stat.pnl < 0 ? "loss" : ""}`}>
                   <span>{w.toUpperCase()}</span>
@@ -1095,26 +1232,101 @@ export default function Terminal() {
               })}
             </div>
           </div>}
+          {intraday.per_cell && Object.keys(intraday.per_cell).length > 0 && <div className="live-window-breakdown">
+            <div className="section-label">PER (ASSET × WINDOW × SIDE) <span>where the edge actually lives</span></div>
+            <div className="intraday-cell-grid">
+              {Object.entries(intraday.per_cell).sort().map(([label, stat]) => {
+                const winRate = stat.bets ? Math.round(100 * stat.wins / stat.bets) : 0;
+                return <div key={label} className={`window-stat ${stat.pnl > 0 ? "gain" : stat.pnl < 0 ? "loss" : ""}`}>
+                  <span>{label}</span>
+                  <b className={stat.pnl >= 0 ? "positive" : "negative"}>{stat.pnl >= 0 ? "+" : ""}{stat.pnl.toFixed(2)}</b>
+                  <small>{stat.bets} bets · {winRate}%</small>
+                </div>;
+              })}
+            </div>
+          </div>}
           <div className="live-open">
-            <div className="section-label">OPEN POSITIONS <span>{book.open_positions.length}</span></div>
-            {book.open_positions.length ? book.open_positions.map((p) => <div className="live-open-row" key={`${p.market}-${p.t}`}>
-              <b className={p.side === "UP" ? "positive" : "negative"}>{p.side}</b>
-              <span>{p.asset}{p.window ? ` ${p.window.toUpperCase()}` : ""} {p.market}</span><span>@ {p.price.toFixed(3)}</span><span>${p.stake.toFixed(2)}</span>
-              <em>opened {utcTime(p.t).slice(0, 8)}</em>
-            </div>) : <div className="paper-empty">NO OPEN POSITION — WAITING FOR A QUALIFYING SETUP</div>}
+            <div className="section-label">OPEN POSITIONS <span>{intraday.open_positions.length}</span></div>
+            {intraday.open_positions.length ? intraday.open_positions.map((p) => {
+              const mark = p.last_bid ?? p.entry_price;
+              const unrealized = (mark - p.entry_price) * (p.stake / p.entry_price);
+              return <div className="live-open-row" key={`${p.cond}-${p.side_token}-${p.opened_ms}`}>
+                <b className={p.side_token === "UP" ? "positive" : "negative"}>{p.side_token}</b>
+                <span>{p.asset} {p.window.toUpperCase()} {p.cond.slice(0, 10)}</span>
+                <span>@ {p.entry_price.toFixed(3)}</span>
+                <span className={unrealized >= 0 ? "positive" : "negative"}>{unrealized >= 0 ? "+" : ""}{unrealized.toFixed(2)}</span>
+                <em>opened {utcTime(p.opened_ms).slice(0, 8)}</em>
+              </div>;
+            }) : <div className="paper-empty">NO OPEN INTRADAY POSITION — WAITING FOR ASK ≤ {intraday.buy_threshold}</div>}
           </div>
-          <div className="table-head engine"><span>TIME</span><span>MKT</span><span>SIDE</span><span>ENTRY</span><span>STAKE</span><span>RESULT</span><span>P&amp;L</span></div>
+          <div className="table-head engine"><span>TIME</span><span>MKT</span><span>SIDE</span><span>ENTRY</span><span>EXIT</span><span>WHY</span><span>P&amp;L</span></div>
           <div className="engine-trades">
-            {book.bets.length ? book.bets.slice().reverse().map((b) => <div className="engine-row" key={`${b.market}-${b.t}`}>
-              <time>{utcTime(b.settled_t).slice(0, 8)}</time><span>{b.asset}{b.window ? ` ${b.window.toUpperCase()}` : ""} {b.market}</span>
-              <b className={b.side === "UP" ? "positive" : "negative"}>{b.side}</b>
-              <span>{b.price.toFixed(3)}</span><span>${b.stake.toFixed(2)}</span>
-              <span className={b.won ? "positive" : "negative"}>{b.won ? "WON" : "LOST"}</span>
+            {intraday.recent_settled.length ? intraday.recent_settled.slice().reverse().map((b) => <div className="engine-row" key={`${b.condition_id}-${b.side_token}-${b.opened_ms}`}>
+              <time>{utcTime(b.closed_ms).slice(0, 8)}</time>
+              <span>{b.asset} {b.window.toUpperCase()} {b.condition_id.slice(0, 10)}</span>
+              <b className={b.side_token === "UP" ? "positive" : "negative"}>{b.side_token}</b>
+              <span>{b.entry_price.toFixed(3)}</span>
+              <span>{b.exit_price.toFixed(3)}</span>
+              <span className={b.won ? "positive" : "negative"}>{b.exit_reason}</span>
               <strong className={b.pnl >= 0 ? "positive" : "negative"}>{b.pnl >= 0 ? "+" : ""}{b.pnl.toFixed(2)}</strong>
-            </div>) : <div className="paper-empty">NO SETTLED BETS YET — POSITIONS SETTLE AT THE MARKET BOUNDARY</div>}
+            </div>) : <div className="paper-empty">NO SETTLED INTRADAY BETS YET — POSITIONS SETTLE ON TARGET OR AT WINDOW END</div>}
           </div>
-          <div className="engine-note"><strong>SIMULATED MONEY ONLY</strong><span>Each strategy runs its own book over the same live tape across all six markets (BTC/ETH x 5m/15m/1h), settled when each market resolves. Strategy decision timings scale to window length. No credential, wallet, signer or order path exists; nothing here moves money.</span></div>
-        </div> : <div className="paper-empty">{livePaperReason}</div>}
+          <div className="engine-note"><strong>MEAN-REVERSION PROBE</strong><span>Buys UP or DOWN token at ask≤{intraday.buy_threshold}, sells at bid≥{intraday.sell_threshold}. Never holds to market resolution — pure buy-low-sell-higher. This is an out-of-sample validation probe for the +11.9% ROI signal found in analyze_intraday.py; needs 5-7 days of mixed regime data. No credential, wallet, signer or order path.</span></div>
+        </div> : <div className="paper-empty">{intradayReason}</div>}
+      </Panel>
+  );
+  const pProfitEngine = (
+      <Panel code="P1" title="PROFIT ENGINE / WALK-FORWARD" className="engine-panel"
+             action={<span className="badge-safe unavailable">{profitEngine ? `RESEARCH · ${profitEngine.verdict}` : "OFFLINE"}</span>}>
+        {profitEngine ? <div className="engine-body">
+          <div className="engine-meta">
+            <span>{(profitEngine.window ?? "unknown").toUpperCase()} · {profitEngine.revision ? `CYCLE ${short(profitEngine.revision)}` : `y=${profitEngine.y_key ?? "y_settle_up"}`} · {profitEngine.sources.polymarket_files} POLY + {profitEngine.sources.external_files} REF · {(profitEngine.sources.total_bytes / (1024*1024)).toFixed(1)} MB</span>
+            <span>SEALED {utcTime(profitEngine.generated_at_ms).slice(0, 8)} · {profitEngine.local_completed_sessions ?? 0} LOCAL COMPLETED · {profitEngine.paper_admission_status?.replace(/_/g, " ") ?? "PAPER GATE UNKNOWN"}</span>
+          </div>
+          {profitEngine.walk_forward?.error ? (
+            <div className="paper-empty">{profitEngine.walk_forward.error}</div>
+          ) : profitEngine.walk_forward?.means ? (<>
+            <div className="live-summary">
+              <div><span>FOLDS</span><b>{profitEngine.walk_forward.n_folds}</b></div>
+              <div><span>RESOLVED CONTRACTS</span><b>{profitEngine.labels?.resolved_contracts ?? "—"}</b></div>
+              <div><span>FEATURE ROWS</span><b>{profitEngine.features?.rows_written?.toLocaleString() ?? "—"}</b></div>
+              <div><span>VERDICT</span><b className={profitEngine.verdict.includes("BEATS_BASELINE") && !profitEngine.verdict.includes("NO_MODEL") ? "positive" : ""}>{profitEngine.verdict.replace(/_/g, " ")}</b></div>
+            </div>
+            <div className="live-window-breakdown">
+              <div className="section-label">MODEL COMPARISON (mean brier — lower is better, sd across folds) <span>vs market_baseline microprice</span></div>
+              <div className="engine-strategies">
+                {Object.entries(profitEngine.walk_forward.means).map(([name, s]) => {
+                  const baseline = profitEngine.walk_forward!.means?.["market_baseline"]?.brier_mean ?? s.brier_mean;
+                  const delta = s.brier_mean - baseline;
+                  const winsCount = (profitEngine.walk_forward?.best_per_fold ?? []).filter(x => x === name).length;
+                  return <button key={name} className="active">
+                    <span>{name}</span>
+                    <b className={delta < 0 ? "positive" : delta > 0 ? "negative" : ""}>
+                      {s.brier_mean.toFixed(4)}
+                    </b>
+                    <small>Δ vs base {delta >= 0 ? "+" : ""}{delta.toFixed(4)} · best {winsCount}/{s.n_folds} folds · ece {s.ece_mean.toFixed(3)}</small>
+                  </button>;
+                })}
+              </div>
+            </div>
+            <div className="table-head engine"><span>FOLD</span><span>TRAIN</span><span>VAL</span><span>TEST</span><span>ROWS</span><span>POS.RATE</span><span>BEST</span></div>
+            <div className="engine-trades">
+              {(profitEngine.walk_forward.folds ?? []).map((f) => {
+                const best = profitEngine.walk_forward?.best_per_fold?.[f.fold] ?? "—";
+                return <div className="engine-row" key={f.fold}>
+                  <time>#{f.fold}</time>
+                  <span>{f.train}</span>
+                  <b>{f.val}</b>
+                  <span>{f.test}</span>
+                  <span>{f.test_rows.toLocaleString()}</span>
+                  <span>{(f.test_positive_rate * 100).toFixed(0)}%</span>
+                  <strong className={best !== "market_baseline" ? "positive" : ""}>{best.replace(/_/g, " ")}</strong>
+                </div>;
+              })}
+            </div>
+          </>) : (<div className="paper-empty">walk-forward has not produced folds yet — waiting for enough resolved contracts</div>)}
+          <div className="engine-note"><strong>FIXED-POINT RESEARCH GATE — PAPER ONLY</strong><span>The rolling cycle freezes completed BTC hours, verifies atomic UP/DOWN books and causal reference data, then evaluates path classification and exact net-value models after spread, fees, slippage and latency on chronological sessions. Rejected models remain NO_TRADE. A genuinely passing model is added automatically to the paper-only registry, but cannot activate live execution. No credential, wallet, signer or order path exists.</span></div>
+        </div> : <div className="paper-empty">{profitEngineReason}</div>}
       </Panel>
   );
   const selectedStrategy = engine?.strategies[Math.min(engineStrategy, (engine.strategies.length || 1) - 1)];
@@ -1221,9 +1433,9 @@ export default function Terminal() {
     </section>}
 
     {workspace === "MARKETS" && <div className="terminal-grid">{pIdentity}{focusHourly ? pChart : pWinChart}{focusHourly ? pBook : pWinBook}</div>}
-    {workspace === "NEURAL" && <div className="ws-full">{pNeural}</div>}
+    {workspace === "NEURAL" && <div className="ws-flow">{pNeural}{pProfitEngine}</div>}
     {workspace === "RISK" && <div className="ws-stack">{pRisk}{sTelemetry}</div>}
-    {workspace === "POSITIONS" && <div className="ws-flow">{pLive}{pEngine}</div>}
+    {workspace === "POSITIONS" && <div className="ws-flow">{pLive}{pIntraday}{pEngine}</div>}
     {workspace === "SETTLEMENT" && <div className="ws-flow">{pPositions}{pAudit}</div>}
     {workspace === "DATA" && <div className="ws-full">{pData}</div>}
     {workspace === "OPERATIONS" && <div className="ws-flow">{pHealth}{pAudit}</div>}

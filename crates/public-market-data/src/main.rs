@@ -2,7 +2,7 @@
 
 //! Read-only hourly BTC/ETH public market recorder.
 
-use market_recorder::JournalWriter;
+use market_recorder::{EventJournal, JournalWriter, SegmentConfig, SegmentedJournalWriter};
 use public_market_data::{
     capture_session, CaptureConfig, CaptureOutcome, DiscoveryConfig, DiscoveryWindow,
     GammaDiscoveryClient, MarketIdentity,
@@ -23,7 +23,8 @@ const MAX_BACKOFF: Duration = Duration::from_secs(30);
 #[derive(Debug)]
 enum Command {
     DiscoverOnly,
-    Record { journal_path: PathBuf },
+    RecordSingle { journal_path: PathBuf },
+    RecordSegments { directory: PathBuf },
 }
 
 #[derive(Debug)]
@@ -32,7 +33,7 @@ struct UsageError;
 impl Display for UsageError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(
-            "usage: public-market-data --discover-only | public-market-data <journal-path>",
+            "usage: public-market-data --discover-only | public-market-data <journal-path> | public-market-data --segments <directory>",
         )
     }
 }
@@ -60,8 +61,12 @@ async fn run() -> Result<(), Box<dyn Error>> {
             print_markets(&markets);
             Ok(())
         }
-        Command::Record { journal_path } => {
+        Command::RecordSingle { journal_path } => {
             let mut journal = JournalWriter::open(journal_path)?;
+            record_forever(&discovery, &mut journal).await
+        }
+        Command::RecordSegments { directory } => {
+            let mut journal = SegmentedJournalWriter::open(directory, SegmentConfig::default())?;
             record_forever(&discovery, &mut journal).await
         }
     }
@@ -71,25 +76,35 @@ fn parse_command(
     mut arguments: impl Iterator<Item = std::ffi::OsString>,
 ) -> Result<Command, UsageError> {
     let first = arguments.next().ok_or(UsageError)?;
-    if arguments.next().is_some() {
-        return Err(UsageError);
-    }
     if first == "--discover-only" {
-        Ok(Command::DiscoverOnly)
-    } else if first.to_string_lossy().starts_with('-') {
+        if arguments.next().is_some() {
+            Err(UsageError)
+        } else {
+            Ok(Command::DiscoverOnly)
+        }
+    } else if first == "--segments" {
+        let directory = arguments.next().ok_or(UsageError)?;
+        if arguments.next().is_some() {
+            Err(UsageError)
+        } else {
+            Ok(Command::RecordSegments {
+                directory: PathBuf::from(directory),
+            })
+        }
+    } else if first.to_string_lossy().starts_with('-') || arguments.next().is_some() {
         Err(UsageError)
     } else {
-        Ok(Command::Record {
+        Ok(Command::RecordSingle {
             journal_path: PathBuf::from(first),
         })
     }
 }
 
-async fn record_forever(
+async fn record_forever<J: EventJournal>(
     discovery: &GammaDiscoveryClient,
-    journal: &mut JournalWriter,
+    journal: &mut J,
 ) -> Result<(), Box<dyn Error>> {
-    let mut sequence = match journal.last_sequence() {
+    let mut sequence = match journal.last_event_sequence() {
         Some(last) => last.checked_add(1).ok_or("journal sequence exhausted")?,
         None => 0,
     };
@@ -184,11 +199,16 @@ mod tests {
         ));
         assert!(matches!(
             parse_command(["capture.journal".into()].into_iter()),
-            Ok(Command::Record { .. })
+            Ok(Command::RecordSingle { .. })
+        ));
+        assert!(matches!(
+            parse_command(["--segments".into(), "capture-segments".into()].into_iter()),
+            Ok(Command::RecordSegments { .. })
         ));
         assert!(parse_command(std::iter::empty()).is_err());
         assert!(parse_command(["--unknown".into()].into_iter()).is_err());
         assert!(parse_command(["one".into(), "two".into()].into_iter()).is_err());
+        assert!(parse_command(["--segments".into()].into_iter()).is_err());
     }
 
     #[test]

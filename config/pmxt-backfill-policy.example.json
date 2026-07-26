@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "source_id": "pmxt-v2",
+  "source_url_template": "https://r2v2.pmxt.dev/polymarket_orderbook_YYYY-MM-DDTHH.parquet",
+  "license": "CC-BY-4.0",
+  "maximum_input_bytes": 629145600,
+  "maximum_rows_per_file": 120000000,
+  "allowed_event_types": ["book", "price_change", "last_trade_price", "tick_size_change"]
+}

@@ -8,12 +8,24 @@ public event independently before any downstream delivery.
 sh terminal/scripts/run-tick-capture.sh
 ```
 
-It creates two checksummed journals under `var/tick-capture` by default:
+On a new explicit start it creates two checksummed, bounded segment directories
+under `var/tick-capture` by default:
 
 ```text
-public-clob.journal       Polymarket CLOB market ticks
-reference-market.journal  Binance reference ticks
+public-clob-segments/       Polymarket CLOB market ticks
+reference-market-segments/  Binance reference ticks
 ```
+
+Each directory contains contiguous 256 MiB / 1,000,000-record journal
+segments. Completed segments are immutable export inputs. The active segment
+must not be exported as a final research artifact until a verified snapshot
+operation has established its exact durable prefix.
+
+Legacy `public-clob.journal` and `reference-market.journal` files are retained
+as historical inputs. The launcher never migrates, truncates, renames, or
+deletes them. Stop a legacy capture explicitly before starting the new
+segmented layout; do not run two capture processes against the same public
+feeds unless you deliberately require duplicate independent observations.
 
 Set `POLY_TICK_JOURNAL_DIR` to select a different explicit directory. Stop it
 with `Ctrl-C`; the recorder closes cleanly and preserves the durable prefix.

@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "asset": "BTC",
+  "window_ms": 900000,
+  "seconds_per_window": 900,
+  "source_globs": [
+    "var/research-15m/btc-*.jsonl"
+  ],
+  "reference_globs": [
+    "var/research-coinbase/btcusd-*.jsonl"
+  ],
+  "output_root": "var/research-export/BTC-15m-per-second",
+  "source_blob_root": "var/research-export/BTC-15m-per-second-source-blobs",
+  "capture_availability_delay_ms": 12000,
+  "maximum_book_age_ms": 10000,
+  "maximum_reference_age_ms": 5000,
+  "maximum_reference_future_skew_ms": 500,
+  "maximum_depth_levels": 10,
+  "maximum_source_files": 100,
+  "maximum_source_bytes": 1000000000
+}

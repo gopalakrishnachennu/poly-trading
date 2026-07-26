@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "asset": "BTC",
+  "horizons_ms": [15000, 30000, 60000, 300000, 600000],
+  "history_lags_ms": [15000, 30000, 60000, 300000],
+  "prediction_quantiles_bps": [9000, 9500, 9750, 9900],
+  "minimum_validation_trades": 20,
+  "minimum_test_trades": 20,
+  "minimum_test_net_pnl_micros": 1,
+  "minimum_test_profit_factor_milli": 1100,
+  "maximum_test_drawdown_micros": 100000000,
+  "training_row_stride": 2,
+  "lightgbm_estimators": 250,
+  "lightgbm_learning_rate_micros": 30000,
+  "lightgbm_num_leaves": 31,
+  "lightgbm_min_child_samples": 100,
+  "random_seed": 94117
+}

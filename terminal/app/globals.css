@@ -191,6 +191,15 @@ kbd { border: 1px solid var(--line); background: var(--surface-3); padding: 2px 
 .live-open { padding: 8px 9px; border-bottom: 1px solid var(--line); background: #0b1216; }
 .live-open .section-label { border-bottom: 0; padding-bottom: 6px; }
 .live-open-row { display: grid; grid-template-columns: 42px 1.1fr 62px 58px 1fr; gap: 8px; align-items: center; min-height: 24px; font-size: 8px; color: var(--muted); }
+.intraday-chart-block { padding: 8px 9px; border-bottom: 1px solid var(--line); background: #0b1216; }
+.bankroll-spark { width: 100%; height: 64px; margin-top: 6px; display: block; }
+.bankroll-spark .spark-line { stroke-width: 1.6; vector-effect: non-scaling-stroke; }
+.bankroll-spark .spark-line.gain { stroke: var(--green); }
+.bankroll-spark .spark-line.loss { stroke: var(--red); }
+.bankroll-spark .spark-baseline { stroke: var(--faint); stroke-width: 0.7; vector-effect: non-scaling-stroke; opacity: .5; }
+.bankroll-spark .spark-dot.gain { fill: var(--green); }
+.bankroll-spark .spark-dot.loss { fill: var(--red); }
+.intraday-cell-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 6px; }
 .live-window-breakdown { padding: 8px 9px; border-bottom: 1px solid var(--line); background: #0b1216; }
 .live-window-breakdown .section-label { border-bottom: 0; padding-bottom: 6px; }
 .live-window-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }

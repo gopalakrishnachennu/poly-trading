@@ -5,11 +5,67 @@
 
 ## Milestone
 
-Phase 4.7 — terminal telemetry resilience, replay-verified partitioned research export, immutable runtime
+Phase 5.22 — consolidated strategy-attributed paper trade history, verified
+BTC 5m/15m/1h per-second datasets, single-file
+derivatives, exact BTC
+five-minute per-second research export, automatic
+paper-only model admission, rolling immutable
+BTC-hourly research cycles, local observed
+BTC-hourly research bridging, path net-value
+evaluation, frozen supplemental BTC-hourly evidence, authentic BBO snapshot
+normalization, official-only resolution backfill, causal spot/flow
+normalization, session walk-forward return/classification/path-exit evaluation,
+unified core-backed paper
+runtime, official BTC/ETH hourly identity manifests and selective PMXT BTC/ETH
+hourly L2 backfill, horizon-bound BTC-hourly model artifacts, atomic BTC+ETH
+hourly terminal projection, strategy-governed BTC-hourly research, segmented
+raw tick capture, conservative BTC-hourly intraday research, terminal telemetry
+resilience, replay-verified partitioned research export, immutable runtime
 configuration, bounded deep-book terminal projection, policy-bound paper campaigns,
 model governance and frozen paper datasets.
 
 ## Status
+
+All recorded paper fills now have one content-addressed, strategy-attributed
+CSV inspection boundary. It contains eight digest- and sequence-verified core
+paper pair fills, 2,340 retired directional simulator trades, and 133 retired
+intraday simulator trades. Every row records its authority class, simulator
+status, strategy provenance, and `real_money=false`. Legacy decimal values
+remain source-preserved text, and independent simulator bankrolls are not
+presented as one portfolio. The export grants no model, wallet, execution, or
+live-trading authority.
+
+The same fail-closed per-second boundary now covers the locally captured BTC
+15-minute and one-hour markets. The sealed 15-minute revision contains 128
+completed conditions and exactly 115,200 rows; the sealed one-hour revision
+contains 25 completed conditions and exactly 90,000 rows. Every 15-minute condition has 900 seconds
+and every one-hour condition has 3,600 seconds. Each timeframe also has a
+separate checksum-addressed single CSV. The implementation does not resample
+between timeframes and preserves carried, missing, stale and reference-absence
+states explicitly. One still-open condition in each timeframe was excluded
+using the frozen capture watermark rather than filled with unobserved seconds.
+
+All 34 UTC-hour partitions in the first sealed BTC five-minute export are now
+also available as one independently checksum-bound CSV derivative. The merger
+verified the source latest pointer, root and per-partition manifests, every
+partition checksum, canonical schema, fixed-point fields, exact timing grid,
+UTC ownership and global condition/second uniqueness before publishing
+114,600 rows for 382 conditions. Every condition has exactly 300 rows. The
+single-file derivative preserves all missing, stale, age and
+causal-availability fields; it does not claim that every second contained a new
+venue observation and grants no financial authority.
+
+The locally captured BTC five-minute REST books now have a deterministic
+per-second research boundary. Newline-complete source prefixes are frozen into
+checksum-addressed blobs before parsing. Every accepted five-minute condition
+emits exactly 300 CSV rows, with integer fixed-point top-of-book and full-depth
+values, original batch-start time, conservative causal-availability time,
+observation age, reference-feed provenance and explicit missing/stale flags.
+The first sealed export contains 382 accepted markets and 114,600 rows across
+34 UTC-hour partitions. One condition containing same-nanosecond conflicting
+depth was quarantined in full. A complete grid is not a claim that a fresh
+venue observation arrived every second and creates no model or trading
+authority.
 
 Code complete and locally integrated. A bounded Rust gateway discovers exactly
 one current BTC and ETH hourly identity, retrieves exact public complementary
@@ -21,6 +77,203 @@ one-sided, crossed, substituted, timed-out or rollover-incomplete refresh clears
 both assets and displays `GLOBAL NO_TRADE`. This gateway is credentialless,
 read-only and financially non-authoritative; its pair economics are observations
 only. Live mutation, accounting, risk and execution integration remain absent.
+
+The fixed-threshold intraday challenger is retired from automatic managed-stack
+startup because its recorded out-of-sample P&L is negative and it has not passed
+an independent executable net-P&L promotion gate. Its reports and observations
+remain immutable research evidence. The challenger itself requires two exact
+deployment acknowledgements before it can create a new simulated entry, so a
+stale pre-retirement supervisor or direct invocation cannot revive it merely
+through its former enable flag. The terminal labels its report as historical
+negative out-of-sample evidence, not an active paper strategy. The recurring Profit Engine now defaults to
+BTC one-hour data and the terminal exposes its result in the Neural workspace as
+a research gate, not a strategy approval. A prediction metric, including a
+baseline-beating Brier score, cannot create paper or live authority; it still
+requires conservative full-depth replay with spread, fees, slippage, latency,
+fill uncertainty, time-separated unseen sessions and risk approval.
+
+The legacy directional Python simulator is also retired from managed startup
+and terminal authority because it maintained independent binary-floating-point
+bankrolls and bypassed the fixed-point core ledger, reservations, scenario
+risk, lifecycle and reconciliation. Its reports and JSONL files remain
+historical evidence only. The explicit policy-bound Rust Paper Week controller
+is the sole managed paper-execution authority; its state is journaled,
+replayable, and separate from any model result. Managed status derives current
+process identities rather than stale background-shell bookkeeping.
+
+The terminal's hourly BTC and ETH view is now accepted and cached as one
+validated atomic pair. A partial, duplicated, malformed, one-sided, or
+single-asset gateway response cannot leave one fresh hourly card beside a stale
+counterpart. During a bounded rollover/outage interval the last complete pair
+may be displayed only as explicitly stale context; it expires before either
+market's own resolution time or the cache deadline. Fresh complete frames
+replace both assets together. This remains a display and observation boundary
+with no execution authority.
+
+The model workspace reads only the canonical `1h` Profit Engine artifact. Each
+research run now publishes an explicit horizon-bound report before a legacy
+root convenience copy. A 5m or 15m worker cannot overwrite the BTC-hourly
+display artifact. The Neural workspace labels live public-data telemetry as
+unvalidated and separately shows the hourly artifact's resolved-session count
+and validation verdict. The present result is `INSUFFICIENT_DATA` with ten
+resolved hourly sessions, below the fifty-session minimum; it is not a model
+approval and cannot create paper or live trading authority.
+
+A revision-pinned MIT-licensed supplemental BTC-hourly archive has now passed a
+separate official-verification boundary for a contiguous 237-hour range. Every
+candidate market ID, condition ID, `Up`/`Down` token mapping, exact official
+`eventStartTime`, one-hour close, rules provenance and binary resolution was
+matched against a preserved official Gamma response. The archive's `start_ts`
+was found to represent creation time and is deliberately never used as the
+session opening. Candidate, official-evidence, identity and resolution-label
+artifacts are independently checksum-bound under
+`var/external-evidence/hf-aliplayer1-ba1ad37c`.
+
+The pinned 637,485,202-byte BTC one-hour BBO Parquet file contains 321,780,673
+rows and matches its configured SHA-256. Its row groups are not globally
+chronological and most historical rows lack local receive time. The normalizer
+therefore performs deterministic time-bucket compaction rather than replaying
+file order, preserves receive time as explicitly unavailable, adds a configured
+two-second source-only latency reserve, and retains conservative lowest-bid,
+highest-ask and minimum-size values per one-second bucket. It produced
+1,514,222 fixed-point best-level rows across all 237 verified sessions. This
+evidence supports immediate-taker best-level research only; it cannot establish
+passive queue fills or full-depth execution.
+
+The conservative BTC-hourly builder derived 185,073 usable decision rows across
+236 independent sessions and froze them chronologically into 141 train, 47
+validation and 48 untouched test sessions. A deterministic LightGBM return
+challenger was trained across five predeclared exit horizons using only causal
+current/past features. No horizon/threshold combination produced positive net
+fixed-point validation P&L, so the artifact verdict is
+`REJECTED_NO_POSITIVE_VALIDATION_STRATEGY`; the test fold was not opened and no
+model file was promoted. The report is preserved under
+`var/models/btc-hourly-intraday-hf-v1`. This rejection does not affect the
+core paper campaign and creates no strategy, capital, credential, signing or
+execution authority.
+
+The same pinned revision now also contributes 375,237 officially
+market/token-verified Polymarket trade prints and 800,457 Binance `btcusdt`
+one-second spot values. The source files and normalized Parquet outputs are
+checksum-bound under `var/research-hf-btc-1h-aux-v1`; prices, sizes and spot
+values are fixed-point integer micros. Non-Binance spot sources are excluded,
+on-chain trades are transaction/log deduplicated, and the configured two-second
+historical-source latency reserve remains binding. These artifacts are
+supplemental research evidence only.
+
+Three subsequent causal challengers were evaluated without weakening the final
+chronological holdout. The v2 return models added opening-price distance,
+multi-horizon spot momentum, book history, depth, pair cost and signed
+prediction-market flow, but produced `REJECTED_NO_WALK_FORWARD_EDGE`. The v3
+rare-positive classifier produced
+`REJECTED_NO_WALK_FORWARD_CLASSIFIER_EDGE`. The v4 implementation corrected the
+research objective to the intended path-dependent trade lifecycle—liquidity
+gates followed by the first executable take-profit, stop-loss or timeout
+bid—but produced `REJECTED_NO_PATH_DEPENDENT_EDGE`. All three used four
+expanding, whole-session development folds; none qualified to evaluate the
+reserved final 24 sessions. Reports are preserved under
+`var/models/btc-hourly-intraday-hf-v2`,
+`var/models/btc-hourly-intraday-hf-v3`, and
+`var/models/btc-hourly-path-hf-v4`. There is therefore no validated directional
+profit model to expose as active or profitable.
+
+The preferred historical BBO normalizer now selects one latest usable source
+row per market/token/second. It never assembles a synthetic bid, ask and size
+combination from separate observations. The create-new corrected tape under
+`var/research-hf-btc-1h-bbo-v2` retained all 237 verified sessions and
+1,514,222 observations with checksum
+`ee1a3521e9ce3f4b798a5b8902eb0a5a149734f0b9553a1120a31dba47b7968d`.
+It produced a second 236-session frozen dataset under
+`var/research-hf-btc-1h-dataset-v2`. The unchanged path-dependent policy gained
+more valid labels, but its only positive development setting earned 70,000
+micros across eight trades in one fold and had no activity in the other three.
+It therefore remains `REJECTED_NO_PATH_DEPENDENT_EDGE`; the final 24-session
+fold was not evaluated.
+
+An additional contiguous 900-hour catalogue interval from 2026-01-25 23:00 UTC
+through 2026-03-04 11:00 UTC was checked against 900 preserved official Gamma
+market responses. All identities, token mappings, hourly boundaries, rules and
+closed binary outcomes verified. Most supplemental catalogue labels were unset,
+so the official closed markets supplied the labels under the explicit
+official-only resolution policy. The pinned BBO Parquet file contains zero rows
+for those 900 market IDs, however. The BBO importer correctly rejected the
+batch for insufficient executable-data coverage. These identities cannot be
+used as artificial independent training sessions.
+
+A point-in-time frozen copy of the July 25–26 local BTC one-hour recorder now
+enters research through an independent normalization boundary. The book
+timestamp is explicitly classified as `LOCAL_GATEWAY_POLL_OBSERVATION`, not
+invented exchange event time. Only atomic UP/DOWN frames with immutable token
+mapping, exact hourly boundaries, sorted non-crossed integer depth and matching
+causal Binance reference observations qualify. Exact restart duplicates are
+deduplicated; four outside-session books were excluded; no partial atomic frame
+was found; and the unfinished current hour was excluded. The create-new local
+artifact under `var/research-local-btc-1h-v2` contains 23 completed sessions,
+53,614 full-depth book rows and 4,589 fixed-point reference observations.
+
+The local artifact was merged chronologically after the immutable 237-session
+historical tape without overlap. The combined evidence under
+`var/research-combined-btc-1h-v3` contains 260 identities, 1,567,836 book rows,
+805,046 Binance spot observations and 375,237 verified historical trade prints.
+The research builder derived usable labeled rows from 259 completed independent
+sessions. The final 24 sessions are held out from development and predominantly
+represent the newer local capture.
+
+Two frozen development-only challengers were evaluated on that combined
+evidence. The original path classifier again returned
+`REJECTED_NO_PATH_DEPENDENT_EDGE`: ordinary thresholds lost in all four
+walk-forward folds, while the only aggregate-positive extreme setting made
+eight trades in one fold and none in the other three. A new v5 path net-value
+regressor predicts exact executable P&L rather than win probability and excludes
+depth/flow features that lack equivalent local coverage. It returned
+`REJECTED_NO_PATH_NET_VALUE_EDGE`; its positive settings made only one or two
+trades and failed the minimum trade and fold-diversity gates. Neither model
+opened the final test, produced a promotable model, or obtained paper authority.
+
+The accepted pipeline now has a policy-cadenced rolling orchestrator. It freezes
+only newline-complete prefixes of active append-only captures into
+content-addressed blobs, excludes the unfinished hour, serializes execution
+under one process lock, and derives an idempotent cycle revision from completed
+local evidence plus every historical and model-policy digest. It then runs
+normalization, merging, dataset construction, path classification and net-value
+evaluation into a create-new evidence directory. Repeated identical completed
+evidence reuses the existing cycle. The first managed cycle contains 24
+completed local sessions and 260 usable combined sessions; both challengers
+were rejected, so revision
+`bbb2bdaa7dbbf05022f991fe985e37d03e27dee5fc942e1997a0b95a9e6fc8fa`
+published `NO_TRADE`. The terminal Profit Engine endpoint now projects this
+checksum-verified fixed-point cycle instead of the older floating-point
+comparison report. The daily loop cannot activate paper or live trading.
+
+Automatic paper-model admission is explicitly enabled. A future challenger
+that passes every development and final unseen-test gate, has a matching frozen
+model checksum and complete final metrics is added to the checksum-bound
+paper-only registry without a manual step. Rejected models produce
+`NO_ELIGIBLE_MODEL`. Admission grants no capital, placement, signing,
+submission, wallet or live-trading authority and cannot bypass Paper Week risk
+or accounting. The managed stack now runs the compact causal reference recorder
+and this fixed-point rolling cycle; it no longer launches the older
+floating-point Profit Engine or the unused Coinbase collector.
+
+The offline PMXT v2 importer accepts only explicitly downloaded source files
+and an official Polymarket BTC/ETH hourly identity allowlist. It rejects unsafe
+or oversized inputs, duplicate allowlist conditions or tokens, unexpected
+Parquet schema/event types, malformed allowlisted depth, timestamp ordering
+failure, receive-time regression, and pre-existing output partitions. Unknown
+archive markets are excluded. Accepted events preserve source
+and receive time and are written only into create-new per-asset UTC hourly
+partitions with input/output checksums and an explicit non-authoritative marker.
+It does not bulk-download, train, promote, paper trade, sign, or submit.
+
+The official hourly identity builder now creates the required allowlist from
+bounded official Polymarket Gamma event pages. It accepts either operator-kept
+immutable response pages or an explicitly requested read-only fetch of the
+pinned endpoint. For every requested UTC hour it requires exactly one BTC and
+one ETH market with exact hour boundaries, `Up`/`Down` outcome order, CLOB
+token IDs, condition ID and rules provenance. It records policy and response
+digests in schema v2; missing, duplicate, ambiguous or malformed coverage
+rejects the complete manifest before the supplemental importer can run. This
+adds no model, paper, wallet, credential, signing or execution authority.
 
 New paper campaigns now require a local, versioned, fixed-point market-policy
 file that explicitly names permitted assets and each asset's fee reserve,
@@ -63,6 +316,17 @@ the unseen test fold. This binding remains paper-only and introduces no
 training, model inference, promotion, capital, risk, signing or execution
 authority.
 
+The BTC hourly intraday research builder now consumes the captured L2 export
+read-only and keeps all monetary quantities, depth walks, fee reserves and
+round-trip returns in fixed-point integers. It derives only immediate-taker
+entry and exit labels from full displayed ask/bid depth, preserves source,
+receive and strategy-available time, exposes integer time-to-expiry and session
+progress features, and groups train/validation/test data by whole chronological
+BTC sessions. Passive queue fills are deliberately absent.
+The active recorded L2 tape contains only nine usable BTC hourly sessions
+against the policy minimum of one hundred, so it emits
+`NO_MODEL_INSUFFICIENT_SESSIONS` and no trainable model or paper authority.
+
 The terminal now produces a manual, local-only research export from a verified
 paper JSONL journal. Every record digest, campaign identity and sequence is
 checked before it writes derived CSV and Parquet views under asset/date/hour
@@ -89,6 +353,16 @@ The paired Binance journal stores aggregate trades, book tickers and candles.
 Disconnect, malformed input, capacity failure or epoch transition is explicit;
 no event is silently skipped. Both are read-only and carry no credential,
 wallet, signing, capital or order authority.
+
+New explicit tick-capture starts use validated 256 MiB / 1,000,000-record
+checksummed segment directories for both the CLOB and reference feeds. Segment
+continuity, clean completed tails, sequence ordering, directory identity and
+symlink safety are checked by the existing durable journal boundary before the
+recorder accepts data. Existing growing single-file journals remain legacy
+historical inputs: they are neither migrated nor deleted, and the active
+legacy recorder is never silently restarted or redirected. A future research
+export consumes completed segments or an explicitly verified immutable prefix;
+an active segment is not automatically a frozen dataset.
 
 Formatting, warnings-denied Clippy, all Rust tests, and all forty-nine
 bounded TLA+ models pass. The `controlled-production-release` owner binds exact

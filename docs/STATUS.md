@@ -4,7 +4,45 @@ Scannable summary of the platform. For the authoritative narrative, see
 [CURRENT_STATE.md](CURRENT_STATE.md); for the phase program, see
 [DELIVERY_ROADMAP.md](DELIVERY_ROADMAP.md).
 
-**Milestone:** Phase 4.7 — code complete and locally integrated.
+**Milestone:** Phase 5.22 — consolidated strategy-attributed paper trade
+history, verified BTC 5m/15m/1h per-second datasets and
+single-file CSV derivatives; core-backed Paper Week remains the only managed paper
+execution authority. The historical evidence is now joined by 24 completed
+locally observed BTC-hourly sessions through a checksum-bound atomic
+UP/DOWN/reference normalization boundary. The combined dataset contains 260
+usable independent sessions. Return, rare-positive, path-classification and
+path-net-value challengers all failed whole-session walk-forward validation.
+The rolling fixed-point research cycle now runs under an exclusive daily
+schedule, reuses identical completed evidence, and exposes only `NO_TRADE` or
+`PAPER_AUTO_ADMITTED` to the terminal. Its first managed cycle contains 24
+local and 260 combined usable sessions, rejected both challengers, and kept the
+paper registry at `NO_ELIGIBLE_MODEL`.
+
+A future model that genuinely passes the frozen unseen-test gates is
+automatically added to the paper-only model registry. That admission is
+checksum-bound and grants no live, capital, placement, signing or submission
+authority. Rejected models are never registered.
+
+The consolidated trade-history export contains 2,481 recorded simulations:
+eight verified core paper pair fills, 2,340 retired directional simulator
+trades, and 133 retired intraday simulator trades. Strategy provenance and
+authority class are explicit on every row. It contains zero real-money trades
+and grants no execution or promotion authority.
+
+The first content-addressed BTC five-minute grid contains 382 accepted
+contracts and exactly 114,600 second rows across 34 UTC-hour partitions.
+Authentic REST observations are carried only with their source/availability
+times and ages; missing, stale and one-sided seconds remain explicit. One
+same-nanosecond conflicting condition is quarantined and manifest-listed.
+All partitions are also available as one separately content-addressed,
+checksum-verified 114,600-row CSV. The merge preserves source values and does
+not convert carried grid values into claimed fresh ticks.
+
+The 15-minute export contains 128 completed authentic conditions and 115,200
+rows. The one-hour export contains 25 completed authentic conditions and
+90,000 rows. One active condition per timeframe was excluded. Their merged
+CSV derivatives independently preserve exact 900- and 3,600-second grids,
+source checksums, fixed-point values and explicit quality state.
 
 **Everything below is offline, read-only, and paper-only.** No crate contains a
 credential, private key, wallet action, authenticated transport, signature
@@ -17,6 +55,20 @@ and cannot be inferred complete from this repository.
 | --- | --- |
 | ✅ code-complete | Deterministic implementation + local certification pass (tests, recovery, applicable TLA+ model). |
 | ⛔ external gate | Requires real infrastructure evidence, credentials, or operator authorization supplied outside the repo. Not started / cannot be inferred. |
+
+## Current runtime boundary
+
+The terminal can observe public markets and operate one explicit, policy-bound
+Paper Week campaign through the Rust core. Legacy Python directional and
+intraday bankroll simulators are retired and retained only as historical
+evidence. They are not an account, strategy authority, model, or path to live
+trading.
+
+The legacy live hourly artifact remains insufficient for independent training.
+A separate combined 259-session dataset has now supported controlled offline
+model evaluation, including 23 completed local sessions, but no tested
+directional challenger demonstrated positive repeatable development P&L.
+Failed reports cannot activate the paper or live paths.
 
 ## Delivery gates (from the roadmap)
 

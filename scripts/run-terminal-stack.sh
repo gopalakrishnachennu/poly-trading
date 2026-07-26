@@ -14,8 +14,9 @@ set -eu
 # Status:
 #   scripts/run-terminal-stack.sh status
 #
-# One process supervises three children. On SIGTERM/SIGINT they are stopped
-# cleanly. Ports: gateway 8088, terminal 3000.
+# One process supervises gateway, capture, reference snapshot, terminal and
+# rolling research children. On SIGTERM/SIGINT they are stopped cleanly.
+# Ports: gateway 8088, terminal 3000.
 
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$project_root"
@@ -31,6 +32,12 @@ fi
 if [ -f "$project_root/config/paper-market-policy.json" ]; then
   export POLY_PAPER_POLICY_PATH="$project_root/config/paper-market-policy.json"
 fi
+# The fixed-threshold intraday challenger is retired from the managed default.
+# It has negative observed paper P&L and is historical research evidence only.
+# A separately governed experiment needs both values; a plain `=1` cannot
+# accidentally revive it after a restart or inherited shell environment.
+: "${POLY_ENABLE_UNVALIDATED_INTRADAY:=0}"
+: "${POLY_INTRADAY_EXPERIMENT_ACK:=}"
 
 gateway_healthy() {
   curl -fsS --max-time 2 http://127.0.0.1:8088/healthz >/dev/null 2>&1
@@ -40,18 +47,25 @@ terminal_healthy() {
 }
 
 if [ "${1:-run}" = "stop" ]; then
-  if [ -f "$pid_file" ]; then
-    pid=$(cat "$pid_file")
-    echo "stopping supervisor pid $pid and its children..."
-    kill "$pid" 2>/dev/null || true
-    # kill any leftover children on the known ports
-    lsof -ti tcp:8088 -sTCP:LISTEN 2>/dev/null | xargs -r kill 2>/dev/null || true
-    lsof -ti tcp:3000 -sTCP:LISTEN 2>/dev/null | xargs -r kill 2>/dev/null || true
-    pkill -f capture_windows.py 2>/dev/null || true
-    pkill -f live_paper_trader.py 2>/dev/null || true
-    pkill -f live_paper_intraday.py 2>/dev/null || true
-    rm -f "$pid_file"
-  fi
+  # Kill every `supervise` shell loop, not just the recorded main pid.
+  # Each `supervise` call backgrounds a `while :` shell that keeps a child
+  # alive; if we only kill the main pid, those loop shells become orphans
+  # (re-parented to init) and keep respawning their children. Result of the
+  # old code: repeated stop/start cycles accumulated duplicate captures and
+  # traders that raced on shared state files. Fix: pkill the supervisor
+  # script by name so every instance (main + supervise loops) dies together.
+  pkill -f "run-terminal-stack.sh" 2>/dev/null || true
+  # Then belt-and-braces the children on the well-known ports and names.
+  lsof -ti tcp:8088 -sTCP:LISTEN 2>/dev/null | xargs -r kill 2>/dev/null || true
+  lsof -ti tcp:3000 -sTCP:LISTEN 2>/dev/null | xargs -r kill 2>/dev/null || true
+  pkill -f capture_windows.py 2>/dev/null || true
+  pkill -f capture_snapshots.py 2>/dev/null || true
+  pkill -f live_paper_trader.py 2>/dev/null || true
+  pkill -f live_paper_intraday.py 2>/dev/null || true
+  pkill -f "profit_engine.run_pipeline" 2>/dev/null || true
+  pkill -f run_btc_hourly_research_cycle.py 2>/dev/null || true
+  rm -f "$pid_file"
+  echo "stopped." >&2
   exit 0
 fi
 
@@ -60,9 +74,10 @@ if [ "${1:-run}" = "status" ]; then
   echo "gateway   : $(gateway_healthy && echo "up" || echo "DOWN")"
   echo "terminal  : $(terminal_healthy && echo "up" || echo "DOWN")"
   echo "capture   : $(pgrep -f capture_windows.py >/dev/null && echo "up pid=$(pgrep -f capture_windows.py)" || echo "DOWN")"
-  echo "trader    : $(pgrep -f live_paper_trader.py >/dev/null && echo "up pid=$(pgrep -f live_paper_trader.py)" || echo "DOWN")"
-  echo "intraday  : $(pgrep -f live_paper_intraday.py >/dev/null && echo "up pid=$(pgrep -f live_paper_intraday.py)" || echo "DOWN")"
-  [ -f "$status_file" ] && cat "$status_file"
+  echo "snapshot  : $(pgrep -f capture_snapshots.py >/dev/null && echo "up pid=$(pgrep -f capture_snapshots.py)" || echo "DOWN")"
+  echo "legacy paper / intraday: RETIRED (core Paper Week only)"
+  echo "research  : $(pgrep -f run_btc_hourly_research_cycle.py >/dev/null && echo "up pid=$(pgrep -f run_btc_hourly_research_cycle.py)" || echo "DOWN")"
+  echo "runtime state: derived from current process identities; legacy status files are ignored"
   exit 0
 fi
 
@@ -73,20 +88,24 @@ if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
 fi
 echo $$ > "$pid_file"
 
-gateway_pid=""; recorder_pid=""; terminal_pid=""; trader_pid=""; intraday_pid=""
+gateway_pid=""; recorder_pid=""; snapshot_pid=""; terminal_pid=""; research_pid=""
+
+pid_for() {
+  pgrep -f "$1" 2>/dev/null | head -n 1 || true
+}
 
 status() {
-  printf '%s  gateway_pid=%s recorder_pid=%s terminal_pid=%s trader_pid=%s intraday_pid=%s\n' \
+  printf '%s  gateway_pid=%s recorder_pid=%s snapshot_pid=%s terminal_pid=%s legacy_trader=RETIRED intraday=RETIRED research_pid=%s\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    "${gateway_pid:-none}" "${recorder_pid:-none}" "${terminal_pid:-none}" "${trader_pid:-none}" "${intraday_pid:-none}" \
+    "$(pid_for 'terminal-projection')" "$(pid_for 'capture_windows.py')" "$(pid_for 'capture_snapshots.py')" "$(pid_for 'next dev')" "$(pid_for 'run_btc_hourly_research_cycle.py')" \
     > "$status_file"
 }
 
 cleanup() {
   echo "stopping stack..." >&2
-  kill "${intraday_pid:-}" "${trader_pid:-}" "${terminal_pid:-}" "${recorder_pid:-}" "${gateway_pid:-}" 2>/dev/null || true
+  kill "${research_pid:-}" "${terminal_pid:-}" "${snapshot_pid:-}" "${recorder_pid:-}" "${gateway_pid:-}" 2>/dev/null || true
   # kill their process groups too (Next.js spawns children)
-  for pid in "${intraday_pid:-}" "${trader_pid:-}" "${terminal_pid:-}" "${recorder_pid:-}" "${gateway_pid:-}"; do
+  for pid in "${research_pid:-}" "${terminal_pid:-}" "${snapshot_pid:-}" "${recorder_pid:-}" "${gateway_pid:-}"; do
     [ -n "$pid" ] && pkill -P "$pid" 2>/dev/null || true
   done
   rm -f "$pid_file"
@@ -105,9 +124,9 @@ supervise() {
     case "$label" in
       gateway)  gateway_pid=$child;;
       recorder) recorder_pid=$child;;
+      snapshot) snapshot_pid=$child;;
       terminal) terminal_pid=$child;;
-      trader)   trader_pid=$child;;
-      intraday) intraday_pid=$child;;
+      research) research_pid=$child;;
     esac
     status
     wait "$child" 2>/dev/null || true
@@ -157,16 +176,23 @@ until terminal_healthy; do
 done
 echo "terminal healthy on http://localhost:3000" >&2
 
-# 6) Live paper trader — runs strategies against all six markets via
-# /api/windows. Paper only; no credential, order or capital authority.
-supervise trader "$log_dir/live-paper.log" \
-  python3 scripts/live_paper_trader.py --interval 10 --principal 1000 &
+# 6) Legacy directional and fixed-threshold intraday simulators are retired.
+# They bypass the core-backed fixed-point Paper Week campaign and must never be
+# launched by this managed stack. Historical evidence files remain untouched.
+echo "legacy directional simulator disabled: RETIRED_LEGACY_BYPASS" >&2
+echo "intraday challenger disabled: RETIRED_NEGATIVE_OOS" >&2
 
-# 7) Paper intraday mean-reversion tracker — buys UP/DOWN token at
-# ask<=0.25, sells at bid>=0.40 on 15m/1h markets. Companion to (6),
-# writes to var/live-paper/intraday-*. Paper only.
-supervise intraday "$log_dir/live-paper-intraday.log" \
-  python3 scripts/live_paper_intraday.py --interval 5 --principal 1000 --stake 10 &
+# 7) Compact causal reference snapshots used by the accepted fixed-point
+# research normalizer. This is read-only public data and carries no authority.
+supervise snapshot "$log_dir/capture-snapshots.log" \
+  python3 scripts/capture_snapshots.py --interval 15 &
+
+# 8) Immutable fixed-point rolling research. A passing model may be added to
+# the paper-only registry, but this process has no paper execution or live
+# order capability. The configured process lock prevents duplicate loops.
+supervise research "$log_dir/btc-hourly-research-cycle.log" \
+  python3 scripts/run_btc_hourly_research_cycle.py \
+    --config config/btc-hourly-rolling-research.example.json --loop &
 
 status
 wait

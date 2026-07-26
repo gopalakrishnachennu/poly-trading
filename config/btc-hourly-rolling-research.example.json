@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "asset": "BTC",
+  "book_source_glob": "var/research-1h/btc-*.jsonl",
+  "reference_source_glob": "var/research-capture/snapshots-*.jsonl",
+  "source_blob_root": "var/research-source-blobs",
+  "cycle_root": "var/research-cycles",
+  "lock_path": "var/locks/btc-hourly-research.lock",
+  "historical_tape_root": "var/research-hf-btc-1h-bbo-v2",
+  "historical_auxiliary_root": "var/research-hf-btc-1h-aux-v1",
+  "research_policy_path": "config/btc-hourly-research-policy.example.json",
+  "classifier_policy_path": "config/btc-hourly-path-model-v4-policy.example.json",
+  "net_value_policy_path": "config/btc-hourly-path-value-v5-policy.example.json",
+  "maximum_source_files_per_group": 400,
+  "maximum_source_bytes_per_file": 2147483648,
+  "maximum_source_rows_per_file": 5000000,
+  "maximum_book_levels": 10,
+  "retrain_interval_seconds": 86400,
+  "automatic_paper_admission": true
+}

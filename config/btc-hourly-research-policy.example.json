@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "asset": "BTC",
+  "window_ms": 3600000,
+  "decision_spacing_ms": 5000,
+  "strategy_latency_ms": 250,
+  "max_source_time_lead_ms": 30000,
+  "start_buffer_ms": 120000,
+  "end_buffer_ms": 120000,
+  "max_future_frame_gap_ms": 15000,
+  "entry_shares_micros": 20000000,
+  "taker_fee_reserve_bps": 100,
+  "minimum_completed_sessions": 100,
+  "horizons_ms": [15000, 30000, 60000, 300000, 600000]
+}

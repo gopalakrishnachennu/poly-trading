@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "source_id": "official-polymarket-gamma",
+  "base_url": "https://gamma-api.polymarket.com/events",
+  "maximum_response_bytes": 33554432,
+  "maximum_pages": 64,
+  "page_size": 100,
+  "assets": ["BTC", "ETH"],
+  "required_outcomes": ["Up", "Down"]
+}

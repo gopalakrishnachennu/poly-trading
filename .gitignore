@@ -19,6 +19,8 @@ formal/states/
 /var/tick-capture/
 .idea/
 .vscode/
+.claude/
+config/local-*-policy.json
 *.log
 var/
 .DS_Store

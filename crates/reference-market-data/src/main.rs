@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use market_recorder::JournalWriter;
+use market_recorder::{EventJournal, JournalWriter, SegmentConfig, SegmentedJournalWriter};
 use reference_market_data::{capture_session, replay_path, CaptureConfig, CaptureOutcome};
 use std::env;
 use std::error::Error;
@@ -25,9 +25,9 @@ async fn main() -> ExitCode {
 
 async fn run() -> Result<(), Box<dyn Error>> {
     let mut args = env::args_os().skip(1);
-    let first = args
-        .next()
-        .ok_or("usage: reference-market-data <journal> | --replay <journal>")?;
+    let first = args.next().ok_or(
+        "usage: reference-market-data <journal> | --segments <directory> | --replay <journal>",
+    )?;
     if first == "--replay" {
         let path = PathBuf::from(args.next().ok_or("missing journal path")?);
         if args.next().is_some() {
@@ -43,16 +43,28 @@ async fn run() -> Result<(), Box<dyn Error>> {
         );
         return Ok(());
     }
+    if first == "--segments" {
+        let directory = PathBuf::from(args.next().ok_or("missing segment directory")?);
+        if args.next().is_some() {
+            return Err("unexpected arguments".into());
+        }
+        let mut journal = SegmentedJournalWriter::open(directory, SegmentConfig::default())?;
+        return record_forever(&mut journal).await;
+    }
     if args.next().is_some() {
         return Err("unexpected arguments".into());
     }
     let mut journal = JournalWriter::open(PathBuf::from(first))?;
-    let mut sequence = journal.last_sequence().map_or(Ok(0), |last| {
+    record_forever(&mut journal).await
+}
+
+async fn record_forever<J: EventJournal>(journal: &mut J) -> Result<(), Box<dyn Error>> {
+    let mut sequence = journal.last_event_sequence().map_or(Ok(0), |last| {
         last.checked_add(1).ok_or("journal sequence exhausted")
     })?;
     let mut backoff = INITIAL_BACKOFF;
     loop {
-        match capture_session(&CaptureConfig::default(), &mut journal, &mut sequence).await {
+        match capture_session(&CaptureConfig::default(), journal, &mut sequence).await {
             Ok(CaptureOutcome::Shutdown) => return Ok(()),
             Ok(CaptureOutcome::Rotate) => backoff = INITIAL_BACKOFF,
             Ok(CaptureOutcome::Disconnected) => {

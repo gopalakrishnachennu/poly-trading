@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Paper intraday mean-reversion tracker (companion to live_paper_trader.py).
+"""Retired fixed-threshold intraday paper challenger.
 
 Watches 15m and 1h markets via /api/windows.  Enters a simulated position
 on the UP or DOWN token when its ask drops to <= BUY_THRESHOLD, exits
@@ -11,11 +11,12 @@ Findings that motivate this (scripts/analyze_intraday.py, n=604 markets):
   1h  UP  buy<=0.25 / sell>=0.40 : +14.9% ROI on n=23
   5m  loses on both sides — excluded.
 
-This tracker does NOT touch the directional trader and does NOT place
-real orders.  It records simulated fills to
+This tracker has negative out-of-sample paper P&L and is retired by default.
+It cannot create simulated entries unless an operator supplies both explicit
+deployment acknowledgements.  It never touches the directional trader and
+does not place real orders.  Its historical simulated fills remain in
 `var/live-paper/intraday-bets-YYYY-MM-DD.jsonl` so we get out-of-sample
-evidence over the next 5-7 days on live tape.  All immutable, no
-retention cap.
+evidence without changing it.
 
 Usage:
     python3 scripts/live_paper_intraday.py                  # supervised
@@ -33,6 +34,35 @@ SELL_THRESHOLD = 0.40  # exit when bid >= this
 WINDOWS = ("15m", "1h")  # 5m loses in every mean-reversion variant
 MAX_CONCURRENT_POSITIONS = 8  # cap so runaway losses can't spiral
 DOLLAR = 1_000_000
+RETIREMENT_STATUS = "RETIRED_NEGATIVE_OOS"
+RETIREMENT_REASON = (
+    "Fixed entry/exit thresholds have negative observed out-of-sample paper "
+    "P&L and have not passed unseen-session net-P&L governance."
+)
+EXPERIMENT_ACKNOWLEDGEMENT = "I_UNDERSTAND_UNVALIDATED_STRATEGY"
+
+
+def experiment_enabled(environ: dict[str, str] | None = None) -> bool:
+    """Require two deployment-level acknowledgements before any paper entry.
+
+    This is intentionally not a dashboard setting.  An old supervisor or a
+    casual direct invocation must not silently revive a retired challenger.
+    """
+    values = os.environ if environ is None else environ
+    return (
+        values.get("POLY_ENABLE_UNVALIDATED_INTRADAY") == "1"
+        and values.get("POLY_INTRADAY_EXPERIMENT_ACK") == EXPERIMENT_ACKNOWLEDGEMENT
+    )
+
+
+def retirement_frame() -> dict[str, object]:
+    return {
+        "paper_only": True,
+        "strategy_status": RETIREMENT_STATUS,
+        "strategy_reason": RETIREMENT_REASON,
+        "new_entries_allowed": False,
+        "historical_evidence_only": True,
+    }
 
 
 def fetch(url: str, timeout: float):
@@ -57,6 +87,9 @@ class IntradayTracker:
         self.started_at = int(time.time() * 1000)
         self.positions: dict[tuple, dict] = {}
         self.settled: list[dict] = []
+        # Bankroll timeline — appended every save, capped so the file stays
+        # small. 2000 points at ~5s cadence ≈ 2.8 hours of chartable history.
+        self.bankroll_series: list[tuple[int, float]] = []
         self.state_path = os.path.join(out_dir, "intraday-state.json")
         self.report_path = os.path.join(out_dir, "intraday-report.json")
         self._load()
@@ -72,6 +105,8 @@ class IntradayTracker:
         self.bankroll = s.get("bankroll", self.principal)
         self.started_at = s.get("started_at_ms", self.started_at)
         self.settled = s.get("settled", [])
+        self.bankroll_series = [(int(t), float(v))
+                                for t, v in s.get("bankroll_series", [])[-2000:]]
         for row in s.get("positions", []):
             key = row.get("key")
             if not isinstance(key, list) or len(key) != 4:
@@ -79,9 +114,22 @@ class IntradayTracker:
             pos = {k: v for k, v in row.items() if k != "key"}
             self.positions[tuple(key)] = pos
         print(f"resumed: bankroll=${self.bankroll:.2f} "
-              f"settled={len(self.settled)} open={len(self.positions)}", flush=True)
+              f"settled={len(self.settled)} open={len(self.positions)} "
+              f"series={len(self.bankroll_series)}", flush=True)
 
     def _save(self):
+        # Sample bankroll (mark-to-market including open positions' last-bid
+        # value) into the timeline before writing state so the chart tracks
+        # unrealised P&L too, not just realised bankroll.
+        now_ms = int(time.time() * 1000)
+        mtm = self.bankroll + sum(
+            (p.get("last_bid") or p["entry_price"]) * p["shares"]
+            for p in self.positions.values()
+        )
+        if not self.bankroll_series or now_ms - self.bankroll_series[-1][0] >= 5_000:
+            self.bankroll_series.append((now_ms, round(mtm, 4)))
+            self.bankroll_series = self.bankroll_series[-2000:]
+
         tmp = self.state_path + ".tmp"
         with open(tmp, "w") as f:
             json.dump({
@@ -91,24 +139,49 @@ class IntradayTracker:
                 # No cap: month-long history in place, monthly archive by user.
                 "settled": self.settled,
                 "positions": [{"key": list(k), **v} for k, v in self.positions.items()],
+                "bankroll_series": self.bankroll_series,
             }, f)
         os.replace(tmp, self.state_path)
 
+        # Per-(window, asset, side_token) rollup so the UI can show which
+        # cross-section actually pays. Same pattern as the directional
+        # trader's per_window strip.
+        per_window: dict[str, dict[str, float | int]] = {}
+        per_asset: dict[str, dict[str, float | int]] = {}
+        per_cell: dict[str, dict[str, float | int]] = {}
+        for b in self.settled:
+            for key_name, bucket in (
+                (b.get("window", "?"), per_window),
+                (b.get("asset", "?"), per_asset),
+                (f"{b.get('asset','?')}-{b.get('window','?')}-{b.get('side_token','?')}", per_cell),
+            ):
+                slot = bucket.setdefault(key_name, {"bets": 0, "wins": 0, "pnl": 0.0})
+                slot["bets"] = int(slot["bets"]) + 1
+                slot["wins"] = int(slot["wins"]) + (1 if b.get("won") else 0)
+                slot["pnl"] = round(float(slot["pnl"]) + float(b.get("pnl", 0.0)), 4)
+
         report = {
-            "generated_at_ms": int(time.time() * 1000),
+            "generated_at_ms": now_ms,
             "paper_only": True, "live": True, "intraday": True,
             "started_at_ms": self.started_at,
             "principal": self.principal,
             "bankroll": round(self.bankroll, 4),
+            "mark_to_market": round(mtm, 4),
             "pnl": round(self.bankroll - self.principal, 4),
+            "mtm_pnl": round(mtm - self.principal, 4),
             "settled": len(self.settled),
             "wins": sum(1 for b in self.settled if b.get("won")),
             "buy_threshold": BUY_THRESHOLD, "sell_threshold": SELL_THRESHOLD,
             "windows": list(WINDOWS),
+            "per_window": per_window,
+            "per_asset": per_asset,
+            "per_cell": per_cell,
+            "bankroll_series": self.bankroll_series[-500:],  # chart-friendly
             "open_positions": [
                 {"asset": p["asset"], "window": p["window"],
                  "cond": p["condition_id"][:10], "side_token": p["side_token"],
                  "entry_price": p["entry_price"], "stake": p["stake"],
+                 "shares": p["shares"],
                  "opened_ms": p["opened_ms"], "last_bid": p.get("last_bid")}
                 for p in self.positions.values()
             ],
@@ -249,7 +322,22 @@ def main():
     ap.add_argument("--timeout", type=float, default=4.0)
     ap.add_argument("--principal", type=float, default=1000.0)
     ap.add_argument("--stake", type=float, default=DEFAULT_STAKE)
+    ap.add_argument("--retirement-check", action="store_true",
+                    help="print the non-authorizing retirement state and exit")
     args = ap.parse_args()
+
+    if args.retirement_check:
+        print(json.dumps(retirement_frame(), sort_keys=True))
+        return 0
+    if not experiment_enabled():
+        print(json.dumps(retirement_frame(), sort_keys=True), flush=True)
+        print(
+            "No simulated entries were created. This retired challenger requires "
+            "POLY_ENABLE_UNVALIDATED_INTRADAY=1 plus an explicit deployment "
+            "acknowledgement for a separately governed experiment.",
+            flush=True,
+        )
+        return 0
 
     tracker = IntradayTracker(args.out_dir, args.principal, args.stake)
     print(f"paper intraday tracker starting", flush=True)
@@ -275,6 +363,6 @@ def main():
 
 if __name__ == "__main__":
     try:
-        main()
+        raise SystemExit(main())
     except KeyboardInterrupt:
         print("\nstopped.")

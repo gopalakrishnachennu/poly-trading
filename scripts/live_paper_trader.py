@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Live directional paper trader for all six BTC/ETH markets (5m, 15m, 1h).
+"""Retired legacy directional paper simulator.
 
 Watches the unified /api/windows feed (which merges the hourly gateway
 projection with the read-only 5m/15m short-window capture) and runs one or
@@ -14,9 +14,11 @@ uses the first reference price it observes within each new window as the
 strike, which is what a real algorithmic trader would do without insider
 knowledge of Polymarket's precise open snapshot.
 
-This is PAPER ONLY. It holds no credential, wallet, signer or transport, places
-no order, and moves no money — it records what each strategy *would* have done
-on live data. Wiring real execution is a separate, deliberate step you own.
+This legacy script is not the core-backed paper runtime. It uses a separate
+float-based bankroll model and therefore bypasses the fixed-point ledger,
+reservation, scenario-risk, lifecycle and reconciliation controls. It is
+retired by default and preserved only to read historical evidence. New paper
+trades belong exclusively to the core-backed Paper Week campaign.
 
 Usage
 -----
@@ -50,6 +52,36 @@ BUILDERS = {
     "book_imbalance": BookImbalance,
 }
 DEFAULT_SLATE = ["fair_value", "multi_momentum", "favorite", "book_imbalance"]
+RETIREMENT_STATUS = "RETIRED_LEGACY_BYPASS"
+RETIREMENT_REASON = (
+    "Legacy directional simulator bypasses the core fixed-point paper ledger, "
+    "scenario-risk, reservation and reconciliation authorities."
+)
+EXPERIMENT_ACKNOWLEDGEMENT = "I_UNDERSTAND_LEGACY_SIMULATOR"
+
+
+def legacy_experiment_enabled(environ: dict[str, str] | None = None) -> bool:
+    """Require an explicit deployment-only acknowledgement for research replay.
+
+    The acknowledgement is deliberately not a UI setting and does not grant
+    real-order authority. It prevents an old supervisor from silently turning
+    an obsolete simulator into the active paper account again.
+    """
+    values = os.environ if environ is None else environ
+    return (
+        values.get("POLY_ENABLE_LEGACY_DIRECTIONAL_SIMULATOR") == "1"
+        and values.get("POLY_LEGACY_DIRECTIONAL_ACK") == EXPERIMENT_ACKNOWLEDGEMENT
+    )
+
+
+def retirement_frame() -> dict[str, object]:
+    return {
+        "paper_only": True,
+        "strategy_status": RETIREMENT_STATUS,
+        "strategy_reason": RETIREMENT_REASON,
+        "new_entries_allowed": False,
+        "historical_evidence_only": True,
+    }
 
 
 def series_variance_rate(samples: list[tuple[int, float]]) -> float:
@@ -468,7 +500,21 @@ def main():
     ap.add_argument("--interval", type=float, default=10.0)
     ap.add_argument("--timeout", type=float, default=4.0)
     ap.add_argument("--out-dir", default="var/live-paper")
+    ap.add_argument("--retirement-check", action="store_true",
+                    help="print the non-authorizing retirement state and exit")
     args = ap.parse_args()
+
+    if args.retirement_check:
+        print(json.dumps(retirement_frame(), sort_keys=True))
+        return 0
+    if not legacy_experiment_enabled():
+        print(json.dumps(retirement_frame(), sort_keys=True), flush=True)
+        print(
+            "No simulated entries were created. Use the core-backed Paper Week "
+            "campaign for paper execution; this legacy simulator is retired.",
+            flush=True,
+        )
+        return 0
 
     names = sorted(BUILDERS) if args.strategy == "all" else [n.strip() for n in args.strategy.split(",") if n.strip()]
     unknown = [n for n in names if n not in BUILDERS]
@@ -500,6 +546,6 @@ def main():
 
 if __name__ == "__main__":
     try:
-        main()
+        raise SystemExit(main())
     except KeyboardInterrupt:
         print("\nstopped.")
