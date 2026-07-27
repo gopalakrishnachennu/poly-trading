@@ -24,6 +24,7 @@ members = [
     "crates/paper-execution",
     "crates/paper-trading-runtime",
     "crates/strategy-proposal",
+    "crates/btc-window-strategy",
     "crates/complete-set-arbitrage",
     "crates/paired-opportunity-runtime",
     "crates/paired-capital-staging",

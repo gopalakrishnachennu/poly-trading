@@ -4,10 +4,23 @@ Scannable summary of the platform. For the authoritative narrative, see
 [CURRENT_STATE.md](CURRENT_STATE.md); for the phase program, see
 [DELIVERY_ROADMAP.md](DELIVERY_ROADMAP.md).
 
-**Milestone:** Phase 5.22 — consolidated strategy-attributed paper trade
+**Milestone:** Phase 5.28 — deterministic frozen 48-hour capture/trade CSV
+export (Spec 095) plus the multi-asset (BTC + ETH) every-second window strategy
+engine (`btc-window-strategy` / Spec 089) with managed `btc-window-paper` bridge
+(Spec 090) and a marked paper book carrying stake, realized and unrealized P&L,
+binary settlement outcomes, and per-setup attribution (Spec 091 / ADR 0095),
+made durable across restarts by journal replay, atomic position checkpoints, a
+single-writer lock, and halt-on-write-failure (Spec 092 / ADR 0096), with
+adaptive stake by setup win rate and a 50% profit withdraw checkpoint on the
+$1,000 paper principal (Spec 093 / ADR 0097), plus a read-only Poly Advisor MCP
+for Claude/ChatGPT research over live + historical paper data (Spec 094 /
+ADR 0098), and digest-bound Window Policy Control Plane for all eight window
+setups (Spec 096 / ADR 0100 Phase 4) with a schema-driven Strategy Builder
+workspace in the terminal,
+consolidated strategy-attributed paper trade
 history, verified BTC 5m/15m/1h per-second datasets and
 single-file CSV derivatives; core-backed Paper Week remains the only managed paper
-execution authority. The historical evidence is now joined by 24 completed
+execution authority for pair capital. The historical evidence is now joined by 24 completed
 locally observed BTC-hourly sessions through a checksum-bound atomic
 UP/DOWN/reference normalization boundary. The combined dataset contains 260
 usable independent sessions. Return, rare-positive, path-classification and
@@ -27,7 +40,9 @@ The consolidated trade-history export contains 2,481 recorded simulations:
 eight verified core paper pair fills, 2,340 retired directional simulator
 trades, and 133 retired intraday simulator trades. Strategy provenance and
 authority class are explicit on every row. It contains zero real-money trades
-and grants no execution or promotion authority.
+and grants no execution or promotion authority. Legacy directional /
+fixed-threshold triggers are DISABLED; new BTC 5m/15m/1h paper evaluation is
+owned by `btc_window_engine_v1` (5m/15m CORE CANDIDATE, 1h SHADOW).
 
 The first content-addressed BTC five-minute grid contains 382 accepted
 contracts and exactly 114,600 second rows across 34 UTC-hour partitions.
@@ -60,9 +75,10 @@ and cannot be inferred complete from this repository.
 
 The terminal can observe public markets and operate one explicit, policy-bound
 Paper Week campaign through the Rust core. Legacy Python directional and
-intraday bankroll simulators are retired and retained only as historical
-evidence. They are not an account, strategy authority, model, or path to live
-trading.
+intraday bankroll simulators are DISABLED as order triggers and retained only
+as historical RETIRED_LEGACY evidence. New BTC multi-window paper decisions are
+evaluated by `btc-window-strategy` (proposal-only). They are not an account,
+live strategy authority, model, or path to live trading.
 
 The legacy live hourly artifact remains insufficient for independent training.
 A separate combined 259-session dataset has now supported controlled offline
@@ -88,7 +104,7 @@ Failed reports cannot activate the paper or live paths.
 | 4.0 | Read-only operator terminal projection | ✅ | n/a (read-only) |
 | 4.1–4.7 | Terminal telemetry, research export, immutable config, paper campaigns, model governance, frozen datasets | ✅ | n/a |
 
-## Crate inventory (60 crates)
+## Crate inventory (61 crates)
 
 All crates are single-writer, journal-first (append + fsync before mutate),
 strictly replayable, and BLAKE3 checkpointed, with absorbing integrity halts.
@@ -128,6 +144,7 @@ strictly replayable, and BLAKE3 checkpointed, with absorbing integrity halts.
 | Crate | Role |
 | --- | --- |
 | `strategy-proposal` | Inert candidate from applied session frame. |
+| `btc-window-strategy` | Every-second BTC 5m/15m/1h paper engine + managed `btc-window-paper` bridge. |
 | `complete-set-arbitrage` | Conservative buy/sell-pair top-of-book economics. |
 | `paired-opportunity-runtime` | Two-candidate combined scenario risk. |
 | `paired-capital-staging` | Transactional both-or-neither reservation. |

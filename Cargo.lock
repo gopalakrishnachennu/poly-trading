@@ -258,6 +258,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "btc-window-strategy"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "proptest",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

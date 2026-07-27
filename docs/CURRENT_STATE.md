@@ -5,7 +5,23 @@
 
 ## Milestone
 
-Phase 5.22 — consolidated strategy-attributed paper trade history, verified
+Phase 5.28 — deterministic frozen 48-hour capture/trade export (Spec 095) plus
+the multi-asset BTC + ETH every-second window strategy engine
+(5m/15m/1h paper) plus managed paper bridge and a marked paper book that
+records stake, mark-to-bid valuation, realized and unrealized P&L, binary
+settlement outcomes, and per-setup attribution separated by performance book
+(Spec 091 / ADR 0095). The book is durable across restarts: the day's journal is
+replayed into the ledger at boot, open positions are checkpointed atomically and
+resumed or settled on restart, a single-writer lock stops two workers racing on
+one journal, and a journal write failure halts the worker (Spec 092 / ADR 0096).
+Stake now follows each setup's day win rate (1.5%–10% of tradable bankroll) and
+the $1,000 principal books a paper withdraw at every +50% profit checkpoint
+(Spec 093 / ADR 0097). A laptop-local Poly Advisor MCP (`advisor/`, Spec 094 /
+ADR 0098) exposes live + historical paper data, 1s snapshots, analytics/what-ifs,
+pattern/suggestion stores, spec drafting, and ops reports to Claude/ChatGPT
+without any order authority. Spec 096 / ADR 0100 Phase 4 binds all eight window
+setups to digest-bound policy (compiled defaults ≡ former hardcodes) with a
+schema-driven Strategy Builder. Consolidated strategy-attributed paper trade history, verified
 BTC 5m/15m/1h per-second datasets, single-file
 derivatives, exact BTC
 five-minute per-second research export, automatic
@@ -25,6 +41,27 @@ configuration, bounded deep-book terminal projection, policy-bound paper campaig
 model governance and frozen paper datasets.
 
 ## Status
+
+The Spec 095 export boundary freezes each active JSONL input at a
+newline-complete byte prefix and emits separate full-depth CSVs for BTC and ETH
+5m/15m/1h books, identities, reference observations, every strategy decision,
+and current/core/retired paper trade events. Source paths, line numbers,
+authority classes, fixed-point fields, legacy decimal text, row counts and
+SHA-256 checksums remain explicit. Duplicate observations are retained and
+marked; observed-invalid books are retained and quality-labelled. The export
+does not resample, infer fills, combine bankrolls, or grant live authority.
+
+The proposal-only `btc-window-strategy` crate implements the Spec 089 /
+ADR 0093 every-second BTC engine for 5-minute, 15-minute, and 1-hour markets.
+It evaluates fixed-point features, calibrated edge, position state
+(FLAT→LOCKED), universal exits/hedges/reversals, complete-set and sequential
+lock scanners, and separated ACTIVE_CORE / SHADOW_EXPERIMENT /
+INVALID_INCOMPLETE books under immutable version `btc_window_engine_v1`.
+Legacy directional and fixed-threshold Python simulators remain DISABLED as
+order triggers; their historical fills stay RETIRED_LEGACY evidence and are
+never mixed into ACTIVE_CORE statistics. The engine cannot reserve capital,
+approve risk, sign, or submit orders. Real-money deployment remains blocked
+until the specification validation gates are met.
 
 All recorded paper fills now have one content-addressed, strategy-attributed
 CSV inspection boundary. It contains eight digest- and sequence-verified core
@@ -704,6 +741,19 @@ the hourly session coordinator. It may derive one inert Phase 2.2
 `OrderExposure` candidate from a bounded fixed-point intent only when the
 session is current and `ACTIVE_READY`, supervision is ready, and both books are
 authoritative. It cannot approve risk, reserve capital, permit, sign, or submit.
+
+The offline `btc-window-strategy` engine evaluates BTC 5m/15m/1h markets every
+second under Spec 089 / ADR 0093. It builds fixed-point features, scores one
+combined candidate per condition, manages open positions before new entries,
+and journals `ACTIVE_CORE` versus `SHADOW_EXPERIMENT` decisions under version
+`btc_window_engine_v1`. It proposes paper intents only.
+
+The managed `btc-window-paper` binary (Spec 090 / ADR 0094) polls the unified
+`/api/windows` observation feed once per second, freezes per-condition BTC
+window-open references, appends decision JSONL under `var/btc-window-paper/`,
+and publishes a non-authoritative `status.json`. The managed terminal stack
+supervises this worker after the terminal is healthy. It grants no live
+trading, Paper Week capital, signing, or submission authority.
 
 The offline `paper-trading-runtime` remains the sole writer
 across accounting, settlement reconciliation, scenario risk, intent policy, and

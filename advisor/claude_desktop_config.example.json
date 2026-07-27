@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "poly-advisor": {
+      "command": "REPLACE_WITH_REPO/scripts/run-poly-advisor-mcp.sh",
+      "env": {
+        "POLY_ADVISOR_API_URL": "http://127.0.0.1:3000/api/btc-window-paper"
+      }
+    }
+  }
+}

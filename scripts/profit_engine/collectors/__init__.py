@@ -1,1 +1,0 @@
-"""External exchange event collectors."""

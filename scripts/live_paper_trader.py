@@ -51,11 +51,23 @@ BUILDERS = {
     "multi_momentum": MultiMomentum, "vol_regime": VolRegime,
     "book_imbalance": BookImbalance,
 }
-DEFAULT_SLATE = ["fair_value", "multi_momentum", "favorite", "book_imbalance"]
-RETIREMENT_STATUS = "RETIRED_LEGACY_BYPASS"
+# Spec 089 / ADR 0093: these strategies are DISABLED as order triggers.
+# New BTC window paper decisions belong to crates/btc-window-strategy.
+DEFAULT_SLATE: list[str] = []
+DISABLED_LEGACY_TRIGGERS = (
+    "fair_value",
+    "multi_momentum",
+    "favorite",
+    "book_imbalance",
+    "momentum",
+    "vol_regime",
+)
+RETIREMENT_STATUS = "DISABLED"
 RETIREMENT_REASON = (
-    "Legacy directional simulator bypasses the core fixed-point paper ledger, "
-    "scenario-risk, reservation and reconciliation authorities."
+    "Legacy directional strategies are DISABLED as order triggers under "
+    "specs/089-btc-multi-window-strategy-engine. Historical float-simulator "
+    "evidence remains RETIRED_LEGACY only; active paper authority is "
+    "btc_window_engine_v1 / core fixed-point path."
 )
 EXPERIMENT_ACKNOWLEDGEMENT = "I_UNDERSTAND_LEGACY_SIMULATOR"
 

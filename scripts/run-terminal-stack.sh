@@ -62,7 +62,7 @@ if [ "${1:-run}" = "stop" ]; then
   pkill -f capture_snapshots.py 2>/dev/null || true
   pkill -f live_paper_trader.py 2>/dev/null || true
   pkill -f live_paper_intraday.py 2>/dev/null || true
-  pkill -f "profit_engine.run_pipeline" 2>/dev/null || true
+  pkill -f btc-window-paper 2>/dev/null || true
   pkill -f run_btc_hourly_research_cycle.py 2>/dev/null || true
   rm -f "$pid_file"
   echo "stopped." >&2
@@ -75,7 +75,8 @@ if [ "${1:-run}" = "status" ]; then
   echo "terminal  : $(terminal_healthy && echo "up" || echo "DOWN")"
   echo "capture   : $(pgrep -f capture_windows.py >/dev/null && echo "up pid=$(pgrep -f capture_windows.py)" || echo "DOWN")"
   echo "snapshot  : $(pgrep -f capture_snapshots.py >/dev/null && echo "up pid=$(pgrep -f capture_snapshots.py)" || echo "DOWN")"
-  echo "legacy paper / intraday: RETIRED (core Paper Week only)"
+  echo "legacy paper / intraday: DISABLED"
+  echo "btc paper : $(pgrep -f btc-window-paper >/dev/null && echo "up pid=$(pgrep -f btc-window-paper)" || echo "DOWN")"
   echo "research  : $(pgrep -f run_btc_hourly_research_cycle.py >/dev/null && echo "up pid=$(pgrep -f run_btc_hourly_research_cycle.py)" || echo "DOWN")"
   echo "runtime state: derived from current process identities; legacy status files are ignored"
   exit 0
@@ -88,26 +89,27 @@ if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
 fi
 echo $$ > "$pid_file"
 
-gateway_pid=""; recorder_pid=""; snapshot_pid=""; terminal_pid=""; research_pid=""
+gateway_pid=""; recorder_pid=""; snapshot_pid=""; terminal_pid=""; research_pid=""; btc_paper_pid=""
 
 pid_for() {
   pgrep -f "$1" 2>/dev/null | head -n 1 || true
 }
 
 status() {
-  printf '%s  gateway_pid=%s recorder_pid=%s snapshot_pid=%s terminal_pid=%s legacy_trader=RETIRED intraday=RETIRED research_pid=%s\n' \
+  printf '%s  gateway_pid=%s recorder_pid=%s snapshot_pid=%s terminal_pid=%s btc_paper_pid=%s legacy_trader=DISABLED intraday=DISABLED research_pid=%s\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    "$(pid_for 'terminal-projection')" "$(pid_for 'capture_windows.py')" "$(pid_for 'capture_snapshots.py')" "$(pid_for 'next dev')" "$(pid_for 'run_btc_hourly_research_cycle.py')" \
+    "$(pid_for 'terminal-projection')" "$(pid_for 'capture_windows.py')" "$(pid_for 'capture_snapshots.py')" "$(pid_for 'next dev')" "$(pid_for 'btc-window-paper')" "$(pid_for 'run_btc_hourly_research_cycle.py')" \
     > "$status_file"
 }
 
 cleanup() {
   echo "stopping stack..." >&2
-  kill "${research_pid:-}" "${terminal_pid:-}" "${snapshot_pid:-}" "${recorder_pid:-}" "${gateway_pid:-}" 2>/dev/null || true
+  kill "${research_pid:-}" "${btc_paper_pid:-}" "${terminal_pid:-}" "${snapshot_pid:-}" "${recorder_pid:-}" "${gateway_pid:-}" 2>/dev/null || true
   # kill their process groups too (Next.js spawns children)
-  for pid in "${research_pid:-}" "${terminal_pid:-}" "${snapshot_pid:-}" "${recorder_pid:-}" "${gateway_pid:-}"; do
+  for pid in "${research_pid:-}" "${btc_paper_pid:-}" "${terminal_pid:-}" "${snapshot_pid:-}" "${recorder_pid:-}" "${gateway_pid:-}"; do
     [ -n "$pid" ] && pkill -P "$pid" 2>/dev/null || true
   done
+  pkill -f btc-window-paper 2>/dev/null || true
   rm -f "$pid_file"
   exit 0
 }
@@ -127,6 +129,7 @@ supervise() {
       snapshot) snapshot_pid=$child;;
       terminal) terminal_pid=$child;;
       research) research_pid=$child;;
+      btc_paper) btc_paper_pid=$child;;
     esac
     status
     wait "$child" 2>/dev/null || true
@@ -179,8 +182,21 @@ echo "terminal healthy on http://localhost:3000" >&2
 # 6) Legacy directional and fixed-threshold intraday simulators are retired.
 # They bypass the core-backed fixed-point Paper Week campaign and must never be
 # launched by this managed stack. Historical evidence files remain untouched.
-echo "legacy directional simulator disabled: RETIRED_LEGACY_BYPASS" >&2
-echo "intraday challenger disabled: RETIRED_NEGATIVE_OOS" >&2
+echo "legacy directional simulator disabled: DISABLED" >&2
+echo "intraday challenger disabled: DISABLED" >&2
+
+# 6b) BTC multi-window paper bridge (Spec 090 / ADR 0094). Proposal-only
+# evaluation of btc_window_engine_v1 against /api/windows. Journals under
+# var/btc-window-paper/. Grants no live trading or Paper Week capital authority.
+btc_paper_bin="$project_root/target/release/btc-window-paper"
+if [ -x "$btc_paper_bin" ]; then
+  supervise btc_paper "$log_dir/btc-window-paper.log" "$btc_paper_bin" &
+elif command -v cargo >/dev/null 2>&1; then
+  supervise btc_paper "$log_dir/btc-window-paper.log" \
+    cargo run --release --locked -p btc-window-strategy --bin btc-window-paper &
+else
+  echo "btc-window-paper binary unavailable; skipping paper bridge" >&2
+fi
 
 # 7) Compact causal reference snapshots used by the accepted fixed-point
 # research normalizer. This is read-only public data and carries no authority.

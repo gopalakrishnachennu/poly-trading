@@ -34,10 +34,11 @@ SELL_THRESHOLD = 0.40  # exit when bid >= this
 WINDOWS = ("15m", "1h")  # 5m loses in every mean-reversion variant
 MAX_CONCURRENT_POSITIONS = 8  # cap so runaway losses can't spiral
 DOLLAR = 1_000_000
-RETIREMENT_STATUS = "RETIRED_NEGATIVE_OOS"
+RETIREMENT_STATUS = "DISABLED"
 RETIREMENT_REASON = (
-    "Fixed entry/exit thresholds have negative observed out-of-sample paper "
-    "P&L and have not passed unseen-session net-P&L governance."
+    "Fixed-threshold cheap-token round trip is DISABLED under "
+    "specs/089-btc-multi-window-strategy-engine (negative OOS; cheap is not "
+    "underpriced). Historical evidence remains RETIRED_LEGACY only."
 )
 EXPERIMENT_ACKNOWLEDGEMENT = "I_UNDERSTAND_UNVALIDATED_STRATEGY"
 

@@ -25,9 +25,14 @@ config/local-*-policy.json
 var/
 .DS_Store
 
+# Poly Advisor MCP build artifacts (Spec 094)
+advisor/node_modules/
+advisor/dist/
+
 # Locally downloaded TLC jar (make tla)
 formal/.tla2tools.jar
 
 # Python bytecode cache
 __pycache__/
 *.pyc
+terminal/tsconfig.tsbuildinfo

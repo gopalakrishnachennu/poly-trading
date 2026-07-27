@@ -1,0 +1,31 @@
+[package]
+name = "btc-window-strategy"
+version = "0.1.0"
+publish.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Fixed-point every-second BTC 5m/15m/1h paper strategy engine"
+
+[[bin]]
+name = "btc-window-paper"
+path = "src/bin/btc_window_paper.rs"
+
+[[bin]]
+name = "btc-window-policy"
+path = "src/bin/btc_window_policy.rs"
+
+[dependencies]
+blake3.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

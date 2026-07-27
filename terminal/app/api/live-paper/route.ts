@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   return Response.json({
     available: false,
-    strategy_status: "RETIRED_LEGACY_BYPASS",
-    reason: "Legacy directional paper simulator is retired because it bypasses the core-backed fixed-point ledger, scenario-risk, reservation and reconciliation path. Use Paper Week instead.",
+    strategy_status: "DISABLED",
+    reason: "Legacy directional paper simulator is DISABLED. Active directional paper evaluation is btc_window_engine_v1 (Positions → BTC WINDOW PAPER). Pair capital remains Paper Week only.",
   });
 }

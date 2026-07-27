@@ -34,7 +34,7 @@ class IntradayRetirementTests(unittest.TestCase):
 
     def test_retirement_frame_is_explicit_and_non_authorizing(self) -> None:
         frame = intraday.retirement_frame()
-        self.assertEqual(frame["strategy_status"], "RETIRED_NEGATIVE_OOS")
+        self.assertEqual(frame["strategy_status"], "DISABLED")
         self.assertFalse(frame["new_entries_allowed"])
         self.assertTrue(frame["historical_evidence_only"])
 
@@ -46,8 +46,11 @@ class IntradayRetirementTests(unittest.TestCase):
             "POLY_LEGACY_DIRECTIONAL_ACK": legacy.EXPERIMENT_ACKNOWLEDGEMENT,
         }))
         frame = legacy.retirement_frame()
-        self.assertEqual(frame["strategy_status"], "RETIRED_LEGACY_BYPASS")
+        self.assertEqual(frame["strategy_status"], "DISABLED")
         self.assertFalse(frame["new_entries_allowed"])
+        self.assertEqual(legacy.DEFAULT_SLATE, [])
+        for name in legacy.DISABLED_LEGACY_TRIGGERS:
+            self.assertIn(name, legacy.BUILDERS)
 
 
 if __name__ == "__main__":

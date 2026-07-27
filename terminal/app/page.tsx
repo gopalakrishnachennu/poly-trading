@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { StrategyBuilderPanel } from "./components/StrategyBuilder";
 
 type AssetName = "BTC" | "ETH";
 type Mode = "discovering" | "ready" | "stale" | "halted";
@@ -200,6 +201,77 @@ function validMicros(value?: string): bigint {
 function quantity(micros?: string): string {
   if (!micros || !/^\d+$/.test(micros)) return "—";
   return (Number(BigInt(micros) / 1_000n) / 1_000).toLocaleString(undefined, { maximumFractionDigits: 3 });
+}
+
+// Ledger amounts arrive as integer micros. Format them for display only —
+// never round-trip a displayed value back into a calculation.
+function bookUsd(micros?: number | null, digits = 2): string {
+  if (typeof micros !== "number" || !Number.isFinite(micros)) return "—";
+  return `$${(micros / 1_000_000).toFixed(digits)}`;
+}
+
+function bookSignedUsd(micros?: number | null, digits = 2): string {
+  if (typeof micros !== "number" || !Number.isFinite(micros)) return "—";
+  const sign = micros > 0 ? "+" : micros < 0 ? "−" : "";
+  return `${sign}$${(Math.abs(micros) / 1_000_000).toFixed(digits)}`;
+}
+
+function pnlTone(micros?: number | null): string {
+  if (typeof micros !== "number" || micros === 0) return "";
+  return micros > 0 ? "positive" : "negative";
+}
+
+function percentFromBps(bps?: number | null): string {
+  return typeof bps === "number" ? `${(bps / 100).toFixed(1)}%` : "—";
+}
+
+function priceMicros(micros?: number | null, digits = 3): string {
+  if (typeof micros !== "number" || !Number.isFinite(micros)) return "—";
+  return (micros / 1_000_000).toFixed(digits);
+}
+
+function duration(seconds?: number | null): string {
+  if (typeof seconds !== "number" || seconds < 0) return "—";
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return m > 0 ? `${m}m ${String(s).padStart(2, "0")}s` : `${s}s`;
+}
+
+function words(value?: string | null): string {
+  return value ? value.replace(/_/g, " ") : "—";
+}
+
+function roiPct(bps?: number | null): string {
+  if (typeof bps !== "number" || !Number.isFinite(bps)) return "—";
+  return `${(bps / 100).toFixed(1)}%`;
+}
+
+function roiFromPnl(pnl?: number | null, stake?: number | null): string {
+  if (typeof pnl !== "number" || typeof stake !== "number" || stake <= 0) return "—";
+  return `${((pnl * 100) / stake).toFixed(1)}%`;
+}
+
+function stateTone(state?: string | null): string {
+  const value = (state ?? "").toLowerCase();
+  if (value === "locked" || value === "hedged") return "state-locked";
+  if (value === "warning" || value === "protect" || value === "reverse-candidate") return "state-warn";
+  if (value === "open" || value === "candidate") return "state-open";
+  return "";
+}
+
+function bookLabel(book?: string | null): string {
+  const value = (book ?? "").toLowerCase();
+  if (value.includes("shadow")) return "SHADOW";
+  if (value.includes("active") || value.includes("core")) return "CORE";
+  if (value.includes("invalid")) return "INVALID";
+  if (value.includes("retired")) return "RETIRED";
+  return words(book);
+}
+
+function profitFactorLabel(bps?: number | null): string {
+  if (typeof bps !== "number") return "—";
+  if (bps >= 999_900) return "∞";
+  return (bps / 10_000).toFixed(2);
 }
 
 function short(value?: string | null): string {
@@ -488,38 +560,105 @@ function LiveChart({ points, target }: { points: number[]; target?: string }) {
   return <canvas className="live-canvas" ref={canvas} role="img" aria-label="Received reference-price history" />;
 }
 
-type EngineTrade = { t: number; asset: string; market: string; side: string; price: number; stake: number; won: boolean; pnl: number };
-type EngineStrategy = { name: string; bets: number; wins: number; pnl: number; bankroll: number; trades: EngineTrade[] };
-type EngineReport = { generated_at_ms: number; markets: number; assets: string[]; principal: number; walk_forward: boolean; strategies: EngineStrategy[] };
-
-// Historical intraday mean-reversion tracker.
-// Simulated positions in the UP/DOWN tokens themselves — bought when the ask
-// crosses the buy_threshold, sold when the bid crosses sell_threshold. Not
-// buy-and-hold-to-resolution. Paper only.
-type IntradayOpen = { asset: string; window: string; cond: string;
-  side_token: string; entry_price: number; stake: number;
-  opened_ms: number; last_bid?: number };
-type IntradaySettled = { asset: string; window: string; condition_id: string;
-  side_token: string; opened_ms: number; closed_ms: number; held_ms?: number;
-  entry_price: number; exit_price: number; stake: number; shares?: number;
-  pnl: number; won: boolean; bankroll_after: number; exit_reason: string };
-type IntradayCell = { bets: number; wins: number; pnl: number };
-type IntradayReport = {
-  generated_at_ms: number; started_at_ms: number;
-  principal: number; bankroll: number; mark_to_market?: number;
-  pnl: number; mtm_pnl?: number;
-  settled: number; wins: number;
-  buy_threshold: number; sell_threshold: number; windows: string[];
-  per_window?: Record<string, IntradayCell>;
-  per_asset?: Record<string, IntradayCell>;
-  per_cell?: Record<string, IntradayCell>;
-  bankroll_series?: [number, number][];
-  open_positions: IntradayOpen[]; recent_settled: IntradaySettled[];
+type BtcWindowAction = {
+  condition_id: string; asset: string; window: string;
+  action: string; reason: string; book: string;
 };
-type IntradayApiResponse = {
-  available: boolean; reason?: string; report?: IntradayReport;
-  strategy_status?: "RETIRED_NEGATIVE_OOS";
-  strategy_reason?: string;
+type BookTotals = {
+  closed_trades: number; wins: number; losses: number; realized_pnl_micros: number;
+  open_positions: number; open_stake_micros: number; unrealized_pnl_micros: number;
+};
+type StrategyStats = {
+  setup_id: string; book: string; totals: BookTotals;
+  win_rate_bps: number | null; total_pnl_micros: number; last_observed_at_ns: number;
+};
+type OpenPositionView = {
+  condition_id: string; asset: string; window: string; side: string; setup_id: string;
+  book: string; position_state: string; quantity_micros: number; entry_ask_micros: number;
+  effective_cost_micros: number; bid_micros: number; stake_micros: number;
+  mark_value_micros: number; unrealized_pnl_micros: number; realized_pnl_micros: number;
+  total_pnl_micros: number; hold_secs: number; entry_observed_at_ns: number;
+};
+type LedgerSnapshot = {
+  active_core: BookTotals; shadow_experiment: BookTotals;
+  by_strategy: StrategyStats[]; by_asset: [string, BookTotals][];
+  by_window: [string, BookTotals][]; open_positions: OpenPositionView[];
+};
+type CapitalState = {
+  principal_micros: number; profit_withdraw_bps: number; withdrawn_micros: number;
+  withdraw_count: number; last_withdraw_micros: number; last_withdraw_at_ns: number;
+};
+type BtcWindowStatus = {
+  paper_only: true; real_money: false; strategy_version: string;
+  live_trading_authority: false; paper_week_capital_authority: false;
+  observed_at_ns: number; markets_seen: number; decisions_this_tick: number;
+  open_positions: number; assets_evaluated: string[]; settlements_this_tick: number;
+  ledger: LedgerSnapshot; capital?: CapitalState;
+  tradable_bankroll_micros?: number; net_realized_micros?: number;
+  withdraw_target_micros?: number; withdraw_progress_bps?: number;
+  last_actions: BtcWindowAction[]; reject_reasons: string[];
+};
+type BtcDecision = {
+  condition_id: string; asset: string; window: "5m" | "15m" | "1h"; elapsed_secs: number;
+  observed_at_ns: number; action: string; reason: string; rejection_reasons: string[];
+  setup_id: string | null; side: "up" | "down" | null; ask_micros: number | null;
+  bid_micros: number | null; edge_micros: number | null;
+  effective_cost_micros: number | null; quantity_micros: number | null;
+  stake_micros: number | null; mark_value_micros: number | null;
+  unrealized_pnl_micros: number | null; realized_pnl_micros: number | null;
+  hold_secs: number | null; outcome: "win" | "loss" | null;
+  settlement_source: string | null; stake_tier?: string | null; risk_bps?: number | null;
+  position_state: string; book: string;
+};
+type BtcWindowMetric = {
+  key: string; asset: string; window: "5m" | "15m" | "1h"; mode: string;
+  decisions: number; entries: number; exits: number; settlements: number;
+  wins: number; losses: number; no_trade: number; realized_pnl_micros: number;
+  open_positions: number; open_stake_micros: number; unrealized_pnl_micros: number;
+  last_action: BtcDecision | null;
+  latest_signal: BtcDecision | null; top_reject_reasons: [string, number][];
+};
+type BtcPortfolio = {
+  closed_trades: number; wins: number; losses: number; win_rate_bps: number | null;
+  realized_pnl_micros: number; unrealized_pnl_micros: number; total_pnl_micros: number;
+  open_positions: number; open_stake_micros: number;
+};
+type ClosedTradeView = {
+  condition_id: string; asset: string; window: "5m" | "15m" | "1h";
+  side: "up" | "down" | null; setup_id: string | null; book: string;
+  action: string; outcome: "win" | "loss" | null; stake_micros: number | null;
+  realized_pnl_micros: number; hold_secs: number | null;
+  effective_cost_micros: number | null; settlement_source: string | null;
+  reason: string; observed_at_ns: number;
+};
+type BookDiagnostics = {
+  scope?: "day"; sample_size: number; avg_win_micros: number | null; avg_loss_micros: number | null;
+  expectancy_micros: number | null; profit_factor_bps: number | null;
+  avg_hold_secs: number | null; best_trade_micros: number | null;
+  worst_trade_micros: number | null; avg_stake_micros: number | null;
+  roi_on_stake_bps: number | null;
+};
+type BtcWindowAnalytics = {
+  assets: string[]; windows: BtcWindowMetric[];
+  recent_decisions: BtcDecision[]; recent_closed?: ClosedTradeView[];
+  day_closes?: number; journal_day?: string | null;
+  diagnostics?: BookDiagnostics; journal_decisions_loaded: number;
+};
+// What boot recovery rebuilt from the journal and position checkpoint (Spec 092).
+type RecoverySummary = {
+  journal_path: string; journal_records_read: number; closes_replayed: number;
+  pre_accounting_closes_skipped: number; positions_restored: number;
+  checkpoint_present: boolean;
+};
+type BtcWindowApiResponse = {
+  available: boolean; live?: boolean; halted?: boolean; status_age_ms?: number;
+  reason?: string; strategy_status?: string; strategy_reason?: string;
+  status?: BtcWindowStatus; portfolio?: BtcPortfolio;
+  recovery?: RecoverySummary | null; settled_on_recovery?: number;
+  capital?: CapitalState | null;
+  tradable_bankroll_micros?: number | null; net_realized_micros?: number | null;
+  withdraw_target_micros?: number | null; withdraw_progress_bps?: number | null;
+  ledger?: LedgerSnapshot; analytics?: BtcWindowAnalytics;
 };
 
 // Profit engine — walk-forward comparison of market/logistic/lightgbm on the
@@ -560,29 +699,6 @@ type ProfitEngineReport = {
   verdict: string;
 };
 
-function BankrollSpark({ series, principal }:
-    { series: [number, number][]; principal: number }) {
-  if (!series || series.length < 2) return null;
-  const w = 340, h = 60, pad = 4;
-  const values = series.map(([, v]) => v);
-  const min = Math.min(principal, ...values);
-  const max = Math.max(principal, ...values);
-  const range = max === min ? 1 : max - min;
-  const xs = (i: number) => pad + (w - 2 * pad) * (i / (series.length - 1));
-  const ys = (v: number) => h - pad - ((v - min) / range) * (h - 2 * pad);
-  const points = series.map(([, v], i) => `${xs(i).toFixed(1)},${ys(v).toFixed(1)}`).join(" ");
-  const baseline = ys(principal).toFixed(1);
-  const last = values[values.length - 1];
-  const gain = last >= principal;
-  return (
-    <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" className="bankroll-spark" role="img" aria-label="bankroll timeline">
-      <line x1={pad} x2={w - pad} y1={baseline} y2={baseline} className="spark-baseline" strokeDasharray="3 3" />
-      <polyline fill="none" className={gain ? "spark-line gain" : "spark-line loss"} points={points} />
-      <circle cx={xs(series.length - 1)} cy={ys(last)} r="2.5" className={gain ? "spark-dot gain" : "spark-dot loss"} />
-    </svg>
-  );
-}
-
 type DataSet = { key: string; label: string; path: string; what: string; files: number; bytes: number; newest_ms: number | null };
 type DataSummary = { generated_at_ms: number; files_scanned: number; markets_total: number; markets_usable: number; min_span_min: number; target_min: number; target_good: number; by_asset: Record<string, number>; by_day: Record<string, number>; first_market_ms: number | null; last_market_ms: number | null };
 type DataReport = { generated_at_ms: number; datasets: DataSet[]; summary: DataSummary | null; summary_hint: string };
@@ -599,7 +715,7 @@ type WindowsReport = { available: boolean; generated_at_ms: number; short_captur
   short_capture_live: boolean; gateway_ready: boolean; markets: WindowMarket[]; note: string };
 const windowKey = (m: { asset: string; window: string }) => `${m.asset}-${m.window}`;
 
-const WORKSPACES = ["MARKETS", "NEURAL", "RISK", "POSITIONS", "SETTLEMENT", "DATA", "OPERATIONS", "AUDIT", "SETTINGS"] as const;
+const WORKSPACES = ["MARKETS", "NEURAL", "RISK", "POSITIONS", "SETTLEMENT", "DATA", "OPERATIONS", "AUDIT", "STRATEGIES", "SETTINGS"] as const;
 type Workspace = (typeof WORKSPACES)[number];
 
 export default function Terminal() {
@@ -611,19 +727,20 @@ export default function Terminal() {
   const [workspace, setWorkspace] = useState<Workspace>("MARKETS");
   const [query, setQuery] = useState("");
   const [commandOpen, setCommandOpen] = useState(false);
-  const [engine, setEngine] = useState<EngineReport | null>(null);
-  const [engineReason, setEngineReason] = useState("loading offline engine report");
-  const [engineStrategy, setEngineStrategy] = useState(0);
-  const [intraday, setIntraday] = useState<IntradayReport | null>(null);
-  const [intradayReason, setIntradayReason] = useState("loading paper intraday tracker");
-  const [intradayStrategyStatus, setIntradayStrategyStatus] = useState("OFFLINE");
-  const [intradayStrategyReason, setIntradayStrategyReason] = useState("");
+  const [btcWindow, setBtcWindow] = useState<BtcWindowApiResponse | null>(null);
+  const [btcWindowReason, setBtcWindowReason] = useState("loading btc window paper bridge");
   const [profitEngine, setProfitEngine] = useState<ProfitEngineReport | null>(null);
   const [profitEngineReason, setProfitEngineReason] = useState("loading profit engine report");
   const [dataReport, setDataReport] = useState<DataReport | null>(null);
   const [windows, setWindows] = useState<WindowsReport | null>(null);
   const [windowsMessage, setWindowsMessage] = useState("loading short-window markets");
   const [selectedWindow, setSelectedWindow] = useState("BTC-1h");
+  const [strategyDecisionFilter, setStrategyDecisionFilter] = useState<"ALL" | "FILLS" | "OPEN" | "CLOSED" | "NO_TRADE" | "MANAGING">("FILLS");
+  const [strategyAsset, setStrategyAsset] = useState("BTC");
+  const [strategyAssetFilter, setStrategyAssetFilter] = useState(true);
+  const [focusedCondition, setFocusedCondition] = useState<string | null>(null);
+  const [strategyWindowFilter, setStrategyWindowFilter] = useState<"ALL" | "5m" | "15m" | "1h">("ALL");
+  const [closedOutcomeFilter, setClosedOutcomeFilter] = useState<"ALL" | "WIN" | "LOSS">("ALL");
   const [windowsHistory, setWindowsHistory] = useState<Record<string, { t: number; p: number }[]>>({});
   const commandRef = useRef<HTMLInputElement>(null);
   // Keep the server and first client render deterministic; the clock starts
@@ -637,11 +754,11 @@ export default function Terminal() {
   const [researchExport, setResearchExport] = useState<ResearchExportStatus | null>(null);
   const [captureControl, setCaptureControl] = useState<CaptureControl | null>(null);
   const [captureMessage, setCaptureMessage] = useState("");
-  const [paperStatusError, setPaperStatusError] = useState("");
-  const [paperAuditError, setPaperAuditError] = useState("");
+  const [, setPaperStatusError] = useState("");
+  const [, setPaperAuditError] = useState("");
   const [principal, setPrincipal] = useState("1000");
   const [backup, setBackup] = useState("0");
-  const [paperMessage, setPaperMessage] = useState("");
+  const [, setPaperMessage] = useState("");
   const lastSequence = useRef<number | null>(null);
   const displayPolicy = runtimeConfiguration?.effective.client_display;
   const pollMs = displayPolicy?.poll_interval_ms ?? BOOTSTRAP_POLL_MS;
@@ -652,7 +769,9 @@ export default function Terminal() {
 
   useEffect(() => {
     const initial = window.setTimeout(() => setNow(Date.now()), 0);
-    const timer = window.setInterval(() => setNow(Date.now()), 250);
+    // 1 Hz is enough for countdown / age labels; 250ms was re-rendering the
+    // whole terminal four times a second on top of heavy paper polls.
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
     return () => { window.clearTimeout(initial); window.clearInterval(timer); };
   }, []);
 
@@ -924,9 +1043,6 @@ export default function Terminal() {
   const pendingCost = paper?.trades.reduce((total, trade) => total + (trade.state === "FILLED_PAIR_LOCKED" ? validMicros(trade.cost_micros) : 0n), 0n) ?? 0n;
   const capitalAssigned = paperPrincipal + paperBackup;
   const replayHealthy = paperReport?.replay_verified === true && Object.values(paperReport.gates).every(Boolean);
-  const paperState = paper === null ? "RECONCILING" : paper.active ? "RUNNING" : "IDLE";
-  const paperStateDetail = paperStatusError || paperAuditError || paperMessage || (paper === null ? "awaiting paper-status authority" : "one-week evidence mode");
-
   // Live fair-value model signal for the selected asset, computed from the same
   // inputs as the offline betting engine: index price vs strike, time to expiry,
   // and volatility estimated from the received reference history. Telemetry only.
@@ -947,23 +1063,6 @@ export default function Terminal() {
     return { pUp, side: pUp >= 0.5 ? "UP" : "DOWN", confidence: Math.min(1, Math.abs(pUp - 0.5) * 2), edge: pUp - upMid };
   }, [asset, history, selected, now]);
 
-  // Offline betting-engine backtest report (static file, refreshed on demand).
-  useEffect(() => {
-    let disposed = false;
-    const read = async () => {
-      try {
-        const response = await fetch("/api/engine", { cache: "no-store" });
-        const payload = await response.json() as { available: boolean; reason?: string; report?: EngineReport };
-        if (disposed) return;
-        if (payload.available && payload.report) { setEngine(payload.report); setEngineReason(""); }
-        else { setEngine(null); setEngineReason(payload.reason ?? "engine report unavailable"); }
-      } catch { if (!disposed) setEngineReason("engine report unavailable"); }
-    };
-    void read();
-    const timer = window.setInterval(read, 30_000);
-    return () => { disposed = true; window.clearInterval(timer); };
-  }, []);
-
   // Saved-data inventory (cheap disk scan + precomputed readiness summary).
   useEffect(() => {
     let disposed = false;
@@ -979,33 +1078,39 @@ export default function Terminal() {
     return () => { disposed = true; window.clearInterval(timer); };
   }, []);
 
-  // Paper intraday mean-reversion tracker — companion to the directional
-  // trader. Simulated buy-low-sell-high on UP/DOWN tokens; never touches
-  // resolution outcomes. Reads /api/live-paper-intraday.
+  // BTC multi-window paper bridge (btc_window_engine_v1) — Spec 090.
+  // Only poll while Positions is open: the route scans today's journal and
+  // saturates Next when hit every 2s from every workspace.
   useEffect(() => {
+    if (workspace !== "POSITIONS") return;
     let disposed = false;
+    let timer: number | undefined;
+    let inFlight = false;
     const read = async () => {
+      if (inFlight || disposed) return;
+      inFlight = true;
       try {
-        const response = await fetch("/api/live-paper-intraday", { cache: "no-store" });
-        const payload = await response.json() as IntradayApiResponse;
+        const response = await fetch("/api/btc-window-paper", { cache: "no-store" });
+        const payload = await response.json() as BtcWindowApiResponse;
         if (disposed) return;
-        if (payload.available && payload.report) {
-          setIntraday(payload.report);
-          setIntradayReason("");
-          setIntradayStrategyStatus(payload.strategy_status ?? "HISTORICAL");
-          setIntradayStrategyReason(payload.strategy_reason ?? "");
-        } else {
-          setIntraday(null);
-          setIntradayReason(payload.reason ?? "intraday tracker unavailable");
-          setIntradayStrategyStatus("OFFLINE");
-          setIntradayStrategyReason("");
+        setBtcWindow(payload);
+        setBtcWindowReason(payload.available ? "" : (payload.reason ?? "btc window paper unavailable"));
+      } catch {
+        if (!disposed) {
+          setBtcWindow(null);
+          setBtcWindowReason("btc window paper unavailable");
         }
-      } catch { if (!disposed) setIntradayReason("intraday tracker unavailable"); }
+      } finally {
+        inFlight = false;
+        if (!disposed) timer = window.setTimeout(read, 5_000);
+      }
     };
     void read();
-    const timer = window.setInterval(read, 5_000);
-    return () => { disposed = true; window.clearInterval(timer); };
-  }, []);
+    return () => {
+      disposed = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [workspace]);
 
   // Profit-engine walk-forward report — refreshed slowly since the pipeline
   // itself rebuilds features + labels + walks ~14 folds each run (~15s
@@ -1189,90 +1294,346 @@ export default function Terminal() {
         </div>
       </Panel>
   );
-  const pLive = (
-      <Panel code="L1" title="LEGACY DIRECTIONAL SIMULATOR / RETIRED" className="engine-panel"
-             action={<span className="badge-safe unavailable">NO ACTIVE PAPER AUTHORITY</span>}>
-        <div className="engine-body">
-          <div className="paper-empty">Retired: use the core-backed Paper Week campaign.</div>
-          <div className="engine-note"><strong>CORE PATH ONLY</strong><span>The retired simulator used separate floating-point bankrolls and bypassed the fixed-point ledger, scenario risk, reservations, execution lifecycle and reconciliation. Historical files are preserved but are not an active account.</span></div>
-        </div>
-      </Panel>
-  );
-  const pIntraday = (
-      <Panel code="L2" title="PAPER INTRADAY / MEAN-REVERSION" className="engine-panel"
-             action={<span className="badge-safe unavailable">{intraday ? intradayStrategyStatus.replace(/_/g, " ") : "OFFLINE"}</span>}>
-        {intraday ? <div className="engine-body">
+  const btcStatus = btcWindow?.status;
+  const btcLive = btcWindow?.available === true && btcWindow.live === true;
+  const ledger = btcWindow?.ledger;
+  const book = btcWindow?.portfolio;
+  const diag = btcWindow?.analytics?.diagnostics;
+  const tradedAssets = btcWindow?.analytics?.assets ?? [];
+  // Default to whichever asset the worker is actually evaluating rather than
+  // pinning the view to BTC.
+  const activeAsset = tradedAssets.includes(strategyAsset) ? strategyAsset : tradedAssets[0] ?? "BTC";
+  const assetMetrics = (btcWindow?.analytics?.windows ?? []).filter((m) => m.asset === activeAsset);
+  const assetMarkets = windowMarkets.filter((market) => market.asset === activeAsset);
+  const strategyMarket = assetMarkets.find((market) => windowKey(market) === selectedWindow) ?? assetMarkets[0];
+  const openPositions = (ledger?.open_positions ?? [])
+    .slice()
+    .sort((left, right) => right.entry_observed_at_ns - left.entry_observed_at_ns);
+  const closedBlotter = (btcWindow?.analytics?.recent_closed ?? []).filter((trade) => {
+    if (strategyAssetFilter && trade.asset !== activeAsset) return false;
+    if (strategyWindowFilter !== "ALL" && trade.window !== strategyWindowFilter) return false;
+    if (focusedCondition && trade.condition_id !== focusedCondition) return false;
+    if (closedOutcomeFilter === "WIN") return trade.outcome === "win" || trade.realized_pnl_micros > 0;
+    if (closedOutcomeFilter === "LOSS") return trade.outcome === "loss" || trade.realized_pnl_micros < 0;
+    return true;
+  });
+  // Journal actions are serde snake_case; the status file's last_actions are not.
+  const isEntry = (action: string) => action === "open" || action === "open_reversed";
+  const isClose = (action: string) => action === "exit" || action === "settle";
+  const isManaging = (action: string) => ["hold", "hedge", "locked", "warning", "protect", "reduce"].includes(action);
+  const strategyTape = (btcWindow?.analytics?.recent_decisions ?? []).filter((decision) => {
+    if (strategyAssetFilter && decision.asset !== activeAsset) return false;
+    if (strategyWindowFilter !== "ALL" && decision.window !== strategyWindowFilter) return false;
+    if (focusedCondition && decision.condition_id !== focusedCondition) return false;
+    if (strategyDecisionFilter === "ALL") return true;
+    if (strategyDecisionFilter === "FILLS") return decision.action !== "no_trade" && decision.action !== "hold";
+    if (strategyDecisionFilter === "OPEN") return isEntry(decision.action);
+    if (strategyDecisionFilter === "CLOSED") return isClose(decision.action);
+    if (strategyDecisionFilter === "MANAGING") return isManaging(decision.action);
+    return decision.action === "no_trade";
+  });
+  const selectedReject = strategyMarket
+    ? (btcStatus?.reject_reasons ?? []).find((reason) => reason.startsWith(strategyMarket.cond))
+    : undefined;
+  const selectedLast = (btcStatus?.last_actions ?? []).find((action) =>
+    strategyMarket ? action.condition_id === strategyMarket.cond : action.asset === activeAsset);
+  const pBtcWindow = (
+      <Panel code="B1" title="WINDOW STRATEGY / PAPER BOOK" className="engine-panel btc-strategy-terminal"
+             action={<span className={`badge-safe ${btcWindow?.halted ? "unavailable" : btcLive ? "" : "unavailable"}`}>{btcWindow?.halted ? "HALTED" : btcLive ? "LIVE" : "STOPPED"}</span>}>
+        {btcStatus ? <div className="engine-body">
           <div className="engine-meta">
-            <span>HISTORICAL SIMULATION · ${intraday.principal.toFixed(0)} START · {intraday.windows.join("/")}</span>
-            <span>LAST RECORDED {utcTime(intraday.generated_at_ms).slice(0, 8)} · NEW ENTRIES DISABLED</span>
+            <span>{btcStatus.strategy_version} · {btcStatus.assets_evaluated.join(" / ") || "NO ASSET"} · 5m CORE · 15m CORE · 1h SHADOW</span>
+            <span>{btcLive ? "WORKER LIVE" : "WORKER NOT UPDATING"} · AGE {btcWindow?.status_age_ms ?? "—"}ms · {btcStatus.markets_seen} MARKETS · {btcWindow?.analytics?.journal_decisions_loaded ?? 0} TAPE · {btcWindow?.analytics?.day_closes ?? btcWindow?.analytics?.recent_closed?.length ?? 0} DAY CLOSES{btcWindow?.analytics?.journal_day ? ` · ${btcWindow.analytics.journal_day}` : ""}</span>
           </div>
-          <div className="engine-note"><strong>{intradayStrategyStatus.replace(/_/g, " ")}</strong><span>{intradayStrategyReason || "Historical paper evidence only; this is not an approved strategy."}</span></div>
-          <div className="live-summary">
-            <div><span>HISTORICAL BANKROLL</span><b>{`$${intraday.bankroll.toFixed(2)}`}</b></div>
-            <div><span>HISTORICAL MARK-TO-MARKET</span><b className={(intraday.mtm_pnl ?? intraday.pnl) >= 0 ? "positive" : "negative"}>{(intraday.mtm_pnl ?? intraday.pnl) >= 0 ? "+" : ""}{(intraday.mtm_pnl ?? intraday.pnl).toFixed(2)}</b></div>
-            <div><span>HISTORICAL REALIZED P&amp;L</span><b className={intraday.pnl >= 0 ? "positive" : "negative"}>{intraday.pnl >= 0 ? "+" : ""}{intraday.pnl.toFixed(2)}</b></div>
-            <div><span>SETTLED</span><b>{intraday.settled}</b></div>
-            <div><span>WIN RATE</span><b>{intraday.settled ? `${Math.round(100 * intraday.wins / intraday.settled)}%` : "—"}</b></div>
-          </div>
-          {intraday.bankroll_series && intraday.bankroll_series.length >= 2 && <div className="intraday-chart-block">
-            <div className="section-label">BANKROLL (mark-to-market, includes open positions) <span>${intraday.principal.toFixed(0)} start · dashed = principal</span></div>
-            <BankrollSpark series={intraday.bankroll_series} principal={intraday.principal} />
+          {btcWindow?.halted && <div className="engine-note halted"><strong>HALTED — JOURNAL NOT DURABLE</strong><span>{btcWindow.strategy_reason}</span></div>}
+          {!btcLive && !btcWindow?.halted && <div className="engine-note"><strong>NOT TRADING YET</strong><span>{btcWindow?.strategy_reason ?? "Start btc-window-paper so decisions refresh every second."}</span></div>}
+          {btcWindow?.recovery && <div className="recovery-strip">
+            <span>BOOK RECOVERED FROM JOURNAL</span>
+            <b>{btcWindow.recovery.closes_replayed} closes replayed</b>
+            <b>{btcWindow.recovery.positions_restored} positions resumed</b>
+            {(btcWindow.settled_on_recovery ?? 0) > 0 && <b className="win">{btcWindow.settled_on_recovery} settled on restart</b>}
+            {btcWindow.recovery.pre_accounting_closes_skipped > 0 && <b className="loss">{btcWindow.recovery.pre_accounting_closes_skipped} pre-091 closes unaccounted</b>}
+            <small>{btcWindow.recovery.journal_records_read.toLocaleString()} journal records read · totals are day-scoped, not since-restart{btcWindow.recovery.checkpoint_present ? " · checkpoint present" : " · no open-position checkpoint"}</small>
           </div>}
-          {intraday.per_window && Object.keys(intraday.per_window).length > 0 && <div className="live-window-breakdown">
-            <div className="section-label">PER-WINDOW <span>settled bets only</span></div>
-            <div className="live-window-grid">
-              {(intraday.windows).map((w) => {
-                const stat = intraday.per_window?.[w] ?? { bets: 0, wins: 0, pnl: 0 };
-                const winRate = stat.bets ? Math.round(100 * stat.wins / stat.bets) : 0;
-                return <div key={w} className={`window-stat ${stat.pnl > 0 ? "gain" : stat.pnl < 0 ? "loss" : ""}`}>
-                  <span>{w.toUpperCase()}</span>
-                  <b className={stat.pnl >= 0 ? "positive" : "negative"}>{stat.pnl >= 0 ? "+" : ""}{stat.pnl.toFixed(2)}</b>
-                  <small>{stat.bets} bets · {winRate}% win</small>
+
+          {(btcWindow?.capital || btcStatus.capital) && <div className="capital-strip">
+            <span>PAPER CAPITAL · $1000 PRINCIPAL</span>
+            <b>BANKROLL {bookUsd(btcWindow?.tradable_bankroll_micros ?? btcStatus.tradable_bankroll_micros)}</b>
+            <b className={pnlTone(btcWindow?.net_realized_micros ?? btcStatus.net_realized_micros)}>NET {bookSignedUsd(btcWindow?.net_realized_micros ?? btcStatus.net_realized_micros)}</b>
+            <b>TARGET {bookUsd(btcWindow?.withdraw_target_micros ?? btcStatus.withdraw_target_micros)}</b>
+            <b className={(btcWindow?.capital ?? btcStatus.capital)?.withdraw_count ? "win" : ""}>WITHDRAWN {bookUsd((btcWindow?.capital ?? btcStatus.capital)?.withdrawn_micros)} ×{(btcWindow?.capital ?? btcStatus.capital)?.withdraw_count ?? 0}</b>
+            <div className="withdraw-meter" title="Progress to next 50% profit withdraw">
+              <i style={{ width: `${Math.min(100, Math.max(0, (btcWindow?.withdraw_progress_bps ?? btcStatus.withdraw_progress_bps ?? 0) / 100))}%` }} />
+              <em>{Math.min(100, Math.max(0, Math.round((btcWindow?.withdraw_progress_bps ?? btcStatus.withdraw_progress_bps ?? 0) / 100)))}% to withdraw</em>
+            </div>
+            <small>Stake scales with setup win rate: weak 1.5% · unproven 2% · average 3% · good 6% · strong 10% of tradable bankroll. Shadow capped at 3%.</small>
+          </div>}
+
+          <div className="pnl-ribbon">
+            <div className="pnl-hero">
+              <span>TOTAL PAPER P&amp;L</span>
+              <strong className={pnlTone(book?.total_pnl_micros)}>{bookSignedUsd(book?.total_pnl_micros)}</strong>
+              <small>realized {bookSignedUsd(book?.realized_pnl_micros)} · open {bookSignedUsd(book?.unrealized_pnl_micros)}</small>
+            </div>
+            <div><span>WIN RATE</span><b>{percentFromBps(book?.win_rate_bps)}</b><small>{book?.wins ?? 0}W / {book?.losses ?? 0}L over {book?.closed_trades ?? 0} closed</small></div>
+            <div><span>CAPITAL AT RISK</span><b>{bookUsd(book?.open_stake_micros)}</b><small>{book?.open_positions ?? 0} open · core {bookUsd(ledger?.active_core.open_stake_micros)} / shadow {bookUsd(ledger?.shadow_experiment.open_stake_micros)}</small></div>
+            <div><span>CORE BOOK</span><b className={pnlTone(ledger?.active_core.realized_pnl_micros)}>{bookSignedUsd(ledger?.active_core.realized_pnl_micros)}</b><small>{ledger?.active_core.closed_trades ?? 0} closed · {percentFromBps(ledger?.active_core.closed_trades ? Math.round((ledger.active_core.wins * 10_000) / ledger.active_core.closed_trades) : null)} win · open {bookSignedUsd(ledger?.active_core.unrealized_pnl_micros)}</small></div>
+            <div><span>SHADOW BOOK</span><b className={pnlTone(ledger?.shadow_experiment.realized_pnl_micros)}>{bookSignedUsd(ledger?.shadow_experiment.realized_pnl_micros)}</b><small>{ledger?.shadow_experiment.closed_trades ?? 0} closed · not promotable · open {bookSignedUsd(ledger?.shadow_experiment.unrealized_pnl_micros)}</small></div>
+            <div><span>SETTLED THIS TICK</span><b>{btcStatus.settlements_this_tick}</b><small>{btcStatus.decisions_this_tick} decisions/sec</small></div>
+          </div>
+
+          <div className="diag-ribbon">
+            <div><span>EXPECTANCY / TRADE</span><b className={pnlTone(diag?.expectancy_micros)}>{bookSignedUsd(diag?.expectancy_micros)}</b><small>today · {diag?.sample_size ?? 0} day closes</small></div>
+            <div><span>AVG WIN</span><b className="positive">{bookSignedUsd(diag?.avg_win_micros)}</b><small>best {bookSignedUsd(diag?.best_trade_micros)}</small></div>
+            <div><span>AVG LOSS</span><b className="negative">{bookSignedUsd(diag?.avg_loss_micros)}</b><small>worst {bookSignedUsd(diag?.worst_trade_micros)}</small></div>
+            <div><span>PROFIT FACTOR</span><b>{profitFactorLabel(diag?.profit_factor_bps)}</b><small>today gross win / |gross loss|</small></div>
+            <div><span>ROI ON STAKE</span><b className={pnlTone(diag?.roi_on_stake_bps)}>{roiPct(diag?.roi_on_stake_bps)}</b><small>avg stake {bookUsd(diag?.avg_stake_micros)}</small></div>
+            <div><span>AVG HOLD</span><b>{duration(diag?.avg_hold_secs)}</b><small>all day accounting closes</small></div>
+          </div>
+
+          {(btcStatus.last_actions.length > 0 || btcStatus.reject_reasons.length > 0) && (
+            <div className="live-tick-strip">
+              <div className="live-tick-actions">
+                <span>THIS SECOND</span>
+                {btcStatus.last_actions.map((action) => (
+                  <button
+                    key={`${action.condition_id}-${action.action}`}
+                    className={`tick-chip ${stateTone(action.action)} ${focusedCondition === action.condition_id ? "active" : ""}`}
+                    onClick={() => {
+                      setFocusedCondition((current) => current === action.condition_id ? null : action.condition_id);
+                      setStrategyAsset(action.asset);
+                      setSelectedWindow(`${action.asset}-${action.window}`);
+                    }}
+                    title={action.condition_id}
+                  >
+                    <b>{action.asset} {action.window.toUpperCase()}</b>
+                    <em>{words(action.action).toUpperCase()}</em>
+                    <small>{words(action.reason)}</small>
+                  </button>
+                ))}
+              </div>
+              {btcStatus.reject_reasons.length > 0 && (
+                <div className="live-tick-rejects">
+                  <span>FEED BLOCKS</span>
+                  {btcStatus.reject_reasons.slice(0, 4).map((reason) => (
+                    <b key={reason} title={reason}>{words(reason.split(":").slice(1).join(":") || reason)}</b>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="section-label">
+            ASSET BOOKS <span>realized results per venue</span>
+            <span className="strategy-filters">
+              {(tradedAssets.length ? tradedAssets : ["BTC"]).map((asset) => (
+                <button key={asset} className={activeAsset === asset ? "active" : ""} onClick={() => { setStrategyAsset(asset); setFocusedCondition(null); }}>{asset}</button>
+              ))}
+            </span>
+          </div>
+          <div className="asset-book-grid">
+            {(ledger?.by_asset ?? []).map(([asset, totals]) => (
+              <button key={asset} className={`asset-book ${activeAsset === asset ? "selected" : ""}`} onClick={() => { setStrategyAsset(asset); setFocusedCondition(null); }}>
+                <div><b>{asset}</b><span className={pnlTone(totals.realized_pnl_micros + totals.unrealized_pnl_micros)}>{bookSignedUsd(totals.realized_pnl_micros + totals.unrealized_pnl_micros)}</span></div>
+                <div className="live-window-line"><span>REALIZED</span><b className={pnlTone(totals.realized_pnl_micros)}>{bookSignedUsd(totals.realized_pnl_micros)}</b></div>
+                <div className="live-window-line"><span>UNREALIZED</span><b className={pnlTone(totals.unrealized_pnl_micros)}>{bookSignedUsd(totals.unrealized_pnl_micros)}</b></div>
+                <div className="live-window-line"><span>OPEN RISK</span><b>{bookUsd(totals.open_stake_micros)}</b></div>
+                <div className="live-window-line"><span>W / L / OPEN</span><b>{totals.wins} / {totals.losses} / {totals.open_positions}</b></div>
+              </button>
+            ))}
+            {(ledger?.by_asset ?? []).length === 0 && <div className="paper-empty">NO CLOSED OR OPEN TRADE ON ANY ASSET YET</div>}
+          </div>
+
+          <div className="strategy-market-header">
+            <div>
+              <span>SELECTED {activeAsset} MARKET</span>
+              <strong>{strategyMarket ? `${strategyMarket.window.toUpperCase()} · ${countdown(strategyMarket.end_ms)} LEFT` : `NO LIVE ${activeAsset} MARKET`}</strong>
+              <small>{strategyMarket ? short(strategyMarket.cond) : windowsMessage}{selectedLast ? ` · last ${words(selectedLast.action)} / ${words(selectedLast.reason)}` : ""}</small>
+            </div>
+            <div className="strategy-quote-grid">
+              <div><span>UP BID</span><b className="positive">{decimal(strategyMarket?.up_book.best_bid_micros)}</b></div>
+              <div><span>UP ASK</span><b className="positive">{decimal(strategyMarket?.up_book.best_ask_micros)}</b></div>
+              <div><span>DOWN BID</span><b className="negative">{decimal(strategyMarket?.down_book.best_bid_micros)}</b></div>
+              <div><span>DOWN ASK</span><b className="negative">{decimal(strategyMarket?.down_book.best_ask_micros)}</b></div>
+              <div><span>PAIR COST</span><b>{decimal(strategyMarket?.pair.buy_pair_cost_micros)}</b></div>
+              <div><span>PAIR GAP</span><b className={Number(strategyMarket?.pair.raw_gap_micros ?? 0) > 0 ? "positive" : "negative"}>{signedDecimal(strategyMarket?.pair.raw_gap_micros)}</b></div>
+            </div>
+          </div>
+
+          <div className="section-label">{activeAsset} WINDOW STATE <span>click a window to drive the quote and book view</span></div>
+          <div className="live-window-grid">
+            {assetMetrics.map((metric) => {
+              const signal = metric.latest_signal ?? metric.last_action;
+              const market = assetMarkets.find((candidate) => candidate.window === metric.window);
+              const selected = market !== undefined && strategyMarket !== undefined && windowKey(market) === windowKey(strategyMarket);
+              const managing = metric.open_positions > 0;
+              return <button className={`live-window-card ${selected ? "selected" : ""} ${managing ? "managing" : ""}`} key={metric.key} onClick={() => {
+                if (market) setSelectedWindow(windowKey(market));
+                setStrategyWindowFilter(metric.window);
+                setFocusedCondition(null);
+              }}>
+                <div><b>{metric.asset} {metric.window.toUpperCase()}</b><span>{metric.mode}{managing ? " · LIVE" : ""}</span></div>
+                <div className="live-window-line"><span>REALIZED</span><b className={pnlTone(metric.realized_pnl_micros)}>{bookSignedUsd(metric.realized_pnl_micros)}</b></div>
+                <div className="live-window-line"><span>OPEN MARK</span><b className={pnlTone(metric.unrealized_pnl_micros)}>{bookSignedUsd(metric.unrealized_pnl_micros)}</b></div>
+                <div className="live-window-line"><span>W / L / OPEN</span><b>{metric.wins} / {metric.losses} / {metric.open_positions}</b></div>
+                <div className="live-window-line"><span>STAKE AT RISK</span><b>{bookUsd(metric.open_stake_micros)}</b></div>
+                <div className="live-window-line"><span>ENTRIES / EXIT / SETTLE</span><b>{metric.entries} / {metric.exits} / {metric.settlements}</b></div>
+                <div className="live-window-line"><span>LAST</span><b>{signal ? words(signal.action) : market ? countdown(market.end_ms) : "WAITING"}</b></div>
+                <div className="live-window-line"><span>SETUP</span><b>{words(signal?.setup_id)}{signal?.side ? ` · ${signal.side.toUpperCase()}` : ""}</b></div>
+                <div className="live-window-line"><span>BLOCKED BY</span><b>{metric.top_reject_reasons.length ? `${words(metric.top_reject_reasons[0][0])} ×${metric.top_reject_reasons[0][1]}` : managing ? "IN POSITION" : "—"}</b></div>
+              </button>;
+            })}
+            {assetMetrics.length === 0 && <div className="paper-empty">NO JOURNALLED SECOND FOR {activeAsset} YET</div>}
+          </div>
+
+          <div className="strategy-book-grid">
+            <div className="strategy-book"><div className="section-label">UP BOOK <span>executable bid / ask</span></div><MiniBook side="UP" book={strategyMarket?.up_book}/></div>
+            <div className="strategy-book"><div className="section-label">DOWN BOOK <span>executable bid / ask</span></div><MiniBook side="DOWN" book={strategyMarket?.down_book}/></div>
+            <div className="strategy-checklist">
+              <div className="section-label">ENTRY GATES <span>selected market right now</span></div>
+              <div><span>Feed freshness</span><b className={btcLive && strategyMarket ? "positive" : "negative"}>{btcLive && strategyMarket ? "PASS" : "BLOCKED"}</b></div>
+              <div><span>Two-sided depth</span><b className={strategyMarket && !selectedReject?.includes("missing executable") ? "positive" : "negative"}>{strategyMarket && !selectedReject?.includes("missing executable") ? "PASS" : "BLOCKED"}</b></div>
+              <div><span>Quote age / rejects</span><b className={selectedReject ? "negative" : "positive"}>{selectedReject ? words(selectedReject.split(":").slice(1).join(":")) : "CLEAR"}</b></div>
+              <div><span>Position state</span><b className={btcStatus.open_positions === 0 ? "positive" : "amber-text"}>{btcStatus.open_positions === 0 ? "FLAT" : `MANAGING ${btcStatus.open_positions}`}</b></div>
+              <div><span>Last decision</span><b className="amber-text">{selectedLast ? words(selectedLast.reason) : "WAITING"}</b></div>
+            </div>
+          </div>
+
+          <div className="section-label">
+            OPEN PAPER POSITIONS <span>marked at the executable bid · click a row to focus its tape</span>
+            {focusedCondition && <button className="text-button" onClick={() => setFocusedCondition(null)}>CLEAR FOCUS {short(focusedCondition)}</button>}
+          </div>
+          {openPositions.length ? <>
+            <div className="table-head positions"><span>MKT</span><span>SIDE</span><span>BOOK</span><span>SETUP</span><span>STATE</span><span>QTY</span><span>ENTRY</span><span>BID</span><span>STAKE</span><span>VALUE</span><span>UPL</span><span>ROI</span><span>HELD</span></div>
+            <div className="engine-trades">
+              {openPositions.map((position) => {
+                const focused = focusedCondition === position.condition_id;
+                return <button
+                  type="button"
+                  className={`positions-row clickable ${stateTone(position.position_state)} ${focused ? "focused" : ""}`}
+                  key={`${position.condition_id}-${position.entry_observed_at_ns}`}
+                  onClick={() => {
+                    setFocusedCondition((current) => current === position.condition_id ? null : position.condition_id);
+                    setStrategyAsset(position.asset);
+                    setSelectedWindow(`${position.asset}-${position.window}`);
+                    setStrategyWindowFilter(position.window as "5m" | "15m" | "1h");
+                    setStrategyDecisionFilter("MANAGING");
+                  }}
+                >
+                  <span><b>{position.asset}</b> {position.window.toUpperCase()}</span>
+                  <b className={position.side === "up" ? "positive" : "negative"}>{position.side.toUpperCase()}</b>
+                  <span className={bookLabel(position.book) === "SHADOW" ? "amber-text" : "cyan-text"}>{bookLabel(position.book)}</span>
+                  <span title={position.setup_id}>{words(position.setup_id)}</span>
+                  <span className={stateTone(position.position_state)}>{position.position_state.toUpperCase()}</span>
+                  <span>{(position.quantity_micros / 1_000_000).toFixed(2)}</span>
+                  <span title={`ask ${priceMicros(position.entry_ask_micros)}`}>{priceMicros(position.effective_cost_micros)}</span>
+                  <span>{priceMicros(position.bid_micros)}</span>
+                  <span>{bookUsd(position.stake_micros)}</span>
+                  <span>{bookUsd(position.mark_value_micros)}</span>
+                  <strong className={pnlTone(position.unrealized_pnl_micros)}>{bookSignedUsd(position.unrealized_pnl_micros)}</strong>
+                  <span className={pnlTone(position.total_pnl_micros)}>{roiFromPnl(position.total_pnl_micros, position.stake_micros)}</span>
+                  <span>{duration(position.hold_secs)}</span>
+                </button>;
+              })}
+            </div>
+          </> : <div className="paper-empty">{btcLive ? "FLAT — NO PAPER CAPITAL COMMITTED ON ANY WINDOW RIGHT NOW" : "No positions until the worker is running"}</div>}
+
+          <div className="section-label">
+            CLOSED TRADES <span>newest of {btcWindow?.analytics?.day_closes ?? closedBlotter.length} day closes · expectancy above uses the full day</span>
+            <span className="strategy-filters">
+              {(["ALL", "WIN", "LOSS"] as const).map((filter) => (
+                <button key={filter} className={closedOutcomeFilter === filter ? "active" : ""} onClick={() => setClosedOutcomeFilter(filter)}>{filter}</button>
+              ))}
+            </span>
+          </div>
+          {closedBlotter.length ? <>
+            <div className="table-head closed"><span>UTC</span><span>MKT</span><span>SIDE</span><span>SETUP</span><span>HOW</span><span>OUTCOME</span><span>ENTRY</span><span>STAKE</span><span>P&amp;L</span><span>ROI</span><span>HELD</span><span>SOURCE</span></div>
+            <div className="engine-trades">
+              {closedBlotter.slice(0, 60).map((trade) => (
+                <button
+                  type="button"
+                  className={`closed-row ${trade.outcome ?? (trade.realized_pnl_micros >= 0 ? "win" : "loss")}`}
+                  key={`${trade.condition_id}-${trade.observed_at_ns}-${trade.action}`}
+                  onClick={() => {
+                    setFocusedCondition((current) => current === trade.condition_id ? null : trade.condition_id);
+                    setStrategyAsset(trade.asset);
+                    setStrategyWindowFilter(trade.window);
+                  }}
+                >
+                  <time>{utcTime(Math.floor(trade.observed_at_ns / 1_000_000)).slice(0, 8)}</time>
+                  <span><b>{trade.asset}</b> {trade.window.toUpperCase()}</span>
+                  <b className={trade.side === "up" ? "positive" : trade.side === "down" ? "negative" : ""}>{trade.side?.toUpperCase() ?? "—"}</b>
+                  <span title={trade.setup_id ?? ""}>{words(trade.setup_id)}</span>
+                  <span>{words(trade.action).toUpperCase()}</span>
+                  <strong className={pnlTone(trade.realized_pnl_micros)}>{(trade.outcome ?? (trade.realized_pnl_micros >= 0 ? "win" : "loss")).toUpperCase()}</strong>
+                  <span>{priceMicros(trade.effective_cost_micros)}</span>
+                  <span>{bookUsd(trade.stake_micros)}</span>
+                  <strong className={pnlTone(trade.realized_pnl_micros)}>{bookSignedUsd(trade.realized_pnl_micros)}</strong>
+                  <span className={pnlTone(trade.realized_pnl_micros)}>{roiFromPnl(trade.realized_pnl_micros, trade.stake_micros)}</span>
+                  <span>{duration(trade.hold_secs)}</span>
+                  <span title={trade.reason}>{words(trade.settlement_source ?? trade.reason)}</span>
+                </button>
+              ))}
+            </div>
+          </> : <div className="paper-empty">{(btcWindow?.analytics?.day_closes ?? diag?.sample_size) ? "NO CLOSED TRADE MATCHES THIS FILTER" : "NO ACCOUNTING CLOSE IN TODAY'S JOURNAL YET"}</div>}
+
+          <div className="section-label">STRATEGY LEADERBOARD <span>ranked by realized plus marked result · core and shadow never merged</span></div>
+          {ledger?.by_strategy.length ? <>
+            <div className="table-head strategies"><span>SETUP</span><span>BOOK</span><span>TRADES</span><span>W / L</span><span>WIN RATE</span><span>REALIZED</span><span>OPEN / RISK</span><span>TOTAL</span></div>
+            <div className="engine-trades">
+              {ledger.by_strategy.map((strategy) => <div className="strategies-row" key={strategy.setup_id}>
+                <span title={strategy.setup_id}>{words(strategy.setup_id)}</span>
+                <span className={strategy.book === "ACTIVE_CORE" ? "cyan-text" : "amber-text"}>{bookLabel(strategy.book)}</span>
+                <span>{strategy.totals.closed_trades}</span>
+                <span>{strategy.totals.wins} / {strategy.totals.losses}</span>
+                <span>{percentFromBps(strategy.win_rate_bps)}</span>
+                <span className={pnlTone(strategy.totals.realized_pnl_micros)}>{bookSignedUsd(strategy.totals.realized_pnl_micros)}</span>
+                <span>{bookSignedUsd(strategy.totals.unrealized_pnl_micros)} <small className="dim">/ {bookUsd(strategy.totals.open_stake_micros)}</small></span>
+                <strong className={pnlTone(strategy.total_pnl_micros)}>{bookSignedUsd(strategy.total_pnl_micros)}</strong>
+              </div>)}
+            </div>
+          </> : <div className="paper-empty">NO SETUP HAS OPENED OR CLOSED A PAPER TRADE YET — THE LEADERBOARD FILLS ON THE FIRST FILL</div>}
+
+          <div className="section-label">
+            DECISION TAPE <span>real journal events only{focusedCondition ? ` · focused ${short(focusedCondition)}` : ""}</span>
+            <span className="strategy-filters">
+              <button className={strategyAssetFilter ? "active" : ""} onClick={() => setStrategyAssetFilter((on) => !on)}>{activeAsset} ONLY</button>
+              {(["ALL", "5m", "15m", "1h"] as const).map((filter) => (
+                <button key={filter} className={strategyWindowFilter === filter ? "active" : ""} onClick={() => setStrategyWindowFilter(filter)}>{filter}</button>
+              ))}
+              {(["ALL", "FILLS", "OPEN", "CLOSED", "MANAGING", "NO_TRADE"] as const).map((filter) => <button key={filter} className={strategyDecisionFilter === filter ? "active" : ""} onClick={() => setStrategyDecisionFilter(filter)}>{filter.replace("_", " ")}</button>)}
+              {focusedCondition && <button className="active" onClick={() => setFocusedCondition(null)}>CLEAR FOCUS</button>}
+            </span>
+          </div>
+          {strategyTape.length ? <>
+            <div className="table-head tape"><span>UTC</span><span>MKT</span><span>ACTION</span><span>SIDE</span><span>BOOK</span><span>SETUP</span><span>PRICE</span><span>QTY</span><span>STAKE</span><span>P&amp;L</span><span>ELAPSED</span><span>WHY</span></div>
+            <div className="engine-trades">
+              {strategyTape.slice(0, 60).map((decision) => {
+                const entry = isEntry(decision.action);
+                const closed = isClose(decision.action);
+                const pnl = closed ? decision.realized_pnl_micros : decision.unrealized_pnl_micros;
+                return <div className={`positions-row tape-row ${decision.outcome ?? ""} ${stateTone(decision.position_state)}`} key={`${decision.condition_id}-${decision.observed_at_ns}-${decision.action}`}>
+                  <time>{utcTime(Math.floor(decision.observed_at_ns / 1_000_000)).slice(0, 8)}</time>
+                  <span><b>{decision.asset}</b> {decision.window.toUpperCase()}</span>
+                  <b className={entry ? "positive" : decision.outcome === "win" ? "positive" : closed && decision.outcome === "loss" ? "negative" : ""}>
+                    {words(decision.action).toUpperCase()}{decision.outcome ? ` ${decision.outcome.toUpperCase()}` : ""}
+                  </b>
+                  <span className={decision.side === "up" ? "positive" : decision.side === "down" ? "negative" : ""}>{decision.side?.toUpperCase() ?? "—"}</span>
+                  <span className={bookLabel(decision.book) === "SHADOW" ? "amber-text" : ""}>{bookLabel(decision.book)}</span>
+                  <span title={decision.setup_id ?? ""}>{words(decision.setup_id)}</span>
+                  <span>{priceMicros(entry ? (decision.ask_micros ?? decision.effective_cost_micros) : (decision.bid_micros ?? decision.effective_cost_micros))}</span>
+                  <span>{decision.quantity_micros ? (decision.quantity_micros / 1_000_000).toFixed(2) : "—"}</span>
+                  <span>{decision.stake_micros ? bookUsd(decision.stake_micros) : "—"}</span>
+                  <strong className={pnlTone(pnl)}>{typeof pnl === "number" ? bookSignedUsd(pnl) : "—"}</strong>
+                  <span title={duration(decision.hold_secs)}>{decision.elapsed_secs}s</span>
+                  <span title={decision.rejection_reasons.join(", ")}>{words(decision.reason)}</span>
                 </div>;
               })}
             </div>
-          </div>}
-          {intraday.per_cell && Object.keys(intraday.per_cell).length > 0 && <div className="live-window-breakdown">
-            <div className="section-label">PER (ASSET × WINDOW × SIDE) <span>where the edge actually lives</span></div>
-            <div className="intraday-cell-grid">
-              {Object.entries(intraday.per_cell).sort().map(([label, stat]) => {
-                const winRate = stat.bets ? Math.round(100 * stat.wins / stat.bets) : 0;
-                return <div key={label} className={`window-stat ${stat.pnl > 0 ? "gain" : stat.pnl < 0 ? "loss" : ""}`}>
-                  <span>{label}</span>
-                  <b className={stat.pnl >= 0 ? "positive" : "negative"}>{stat.pnl >= 0 ? "+" : ""}{stat.pnl.toFixed(2)}</b>
-                  <small>{stat.bets} bets · {winRate}%</small>
-                </div>;
-              })}
-            </div>
-          </div>}
-          <div className="live-open">
-            <div className="section-label">OPEN POSITIONS <span>{intraday.open_positions.length}</span></div>
-            {intraday.open_positions.length ? intraday.open_positions.map((p) => {
-              const mark = p.last_bid ?? p.entry_price;
-              const unrealized = (mark - p.entry_price) * (p.stake / p.entry_price);
-              return <div className="live-open-row" key={`${p.cond}-${p.side_token}-${p.opened_ms}`}>
-                <b className={p.side_token === "UP" ? "positive" : "negative"}>{p.side_token}</b>
-                <span>{p.asset} {p.window.toUpperCase()} {p.cond.slice(0, 10)}</span>
-                <span>@ {p.entry_price.toFixed(3)}</span>
-                <span className={unrealized >= 0 ? "positive" : "negative"}>{unrealized >= 0 ? "+" : ""}{unrealized.toFixed(2)}</span>
-                <em>opened {utcTime(p.opened_ms).slice(0, 8)}</em>
-              </div>;
-            }) : <div className="paper-empty">NO OPEN INTRADAY POSITION — WAITING FOR ASK ≤ {intraday.buy_threshold}</div>}
-          </div>
-          <div className="table-head engine"><span>TIME</span><span>MKT</span><span>SIDE</span><span>ENTRY</span><span>EXIT</span><span>WHY</span><span>P&amp;L</span></div>
-          <div className="engine-trades">
-            {intraday.recent_settled.length ? intraday.recent_settled.slice().reverse().map((b) => <div className="engine-row" key={`${b.condition_id}-${b.side_token}-${b.opened_ms}`}>
-              <time>{utcTime(b.closed_ms).slice(0, 8)}</time>
-              <span>{b.asset} {b.window.toUpperCase()} {b.condition_id.slice(0, 10)}</span>
-              <b className={b.side_token === "UP" ? "positive" : "negative"}>{b.side_token}</b>
-              <span>{b.entry_price.toFixed(3)}</span>
-              <span>{b.exit_price.toFixed(3)}</span>
-              <span className={b.won ? "positive" : "negative"}>{b.exit_reason}</span>
-              <strong className={b.pnl >= 0 ? "positive" : "negative"}>{b.pnl >= 0 ? "+" : ""}{b.pnl.toFixed(2)}</strong>
-            </div>) : <div className="paper-empty">NO SETTLED INTRADAY BETS YET — POSITIONS SETTLE ON TARGET OR AT WINDOW END</div>}
-          </div>
-          <div className="engine-note"><strong>MEAN-REVERSION PROBE</strong><span>Buys UP or DOWN token at ask≤{intraday.buy_threshold}, sells at bid≥{intraday.sell_threshold}. Never holds to market resolution — pure buy-low-sell-higher. This is an out-of-sample validation probe for the +11.9% ROI signal found in analyze_intraday.py; needs 5-7 days of mixed regime data. No credential, wallet, signer or order path.</span></div>
-        </div> : <div className="paper-empty">{intradayReason}</div>}
+          </> : <div className="paper-empty">NO JOURNALLED DECISION MATCHES THIS FILTER — try FILLS, MANAGING, or clear focus</div>}
+
+          <div className="engine-note"><strong>PAPER BOOK — NO LIVE AUTHORITY</strong><span>Positions are marked at the executable bid for their own side, so reported profit is what the book would actually pay right now. Settlement resolves from the observed reference level against the recorded window open (ADR 0095) and is paper evidence, not the official resolver. Expectancy, profit-factor, ROI, and window entry/exit/settle counts are computed from every accounting close/open in today&apos;s journal; the closed-trades table shows the newest slice for readability. Ribbon totals come from the durable day ledger. SHADOW_EXPERIMENT results never merge into the core book and cannot promote a setup. This engine proposes only: no credential, wallet, signer, or order path exists.</span></div>
+        </div> : <div className="paper-empty">{btcWindowReason}</div>}
       </Panel>
   );
   const pProfitEngine = (
@@ -1329,31 +1690,6 @@ export default function Terminal() {
         </div> : <div className="paper-empty">{profitEngineReason}</div>}
       </Panel>
   );
-  const selectedStrategy = engine?.strategies[Math.min(engineStrategy, (engine.strategies.length || 1) - 1)];
-  const pEngine = (
-      <Panel code="E1" title="BETTING ENGINE / SIMULATED BETS" className="engine-panel"
-             action={<span className="badge-safe unavailable">BACKTEST · PAPER</span>}>
-        {engine ? <div className="engine-body">
-          <div className="engine-meta"><span>{engine.markets} MARKETS · {engine.assets.join("+")} · ${engine.principal.toFixed(0)} PRINCIPAL</span><span>{engine.walk_forward ? "WALK-FORWARD" : "IN-SAMPLE"} · {utcTime(engine.generated_at_ms)}</span></div>
-          <div className="engine-strategies">
-            {engine.strategies.map((s, index) => <button key={s.name} className={index === engineStrategy ? "active" : ""} onClick={() => setEngineStrategy(index)}>
-              <span>{s.name}</span><b className={s.pnl >= 0 ? "positive" : "negative"}>{s.pnl >= 0 ? "+" : ""}{s.pnl.toFixed(2)}</b><small>{s.bets} bets · {s.bets ? Math.round(100 * s.wins / s.bets) : 0}% win</small>
-            </button>)}
-          </div>
-          <div className="table-head engine"><span>TIME</span><span>MKT</span><span>SIDE</span><span>ENTRY</span><span>STAKE</span><span>RESULT</span><span>P&amp;L</span></div>
-          <div className="engine-trades">
-            {selectedStrategy?.trades.length ? selectedStrategy.trades.slice().reverse().map((t) => <div className="engine-row" key={`${t.market}-${t.t}`}>
-              <time>{utcTime(t.t).slice(0, 8)}</time><span>{t.asset} {t.market}</span>
-              <b className={t.side === "UP" ? "positive" : "negative"}>{t.side}</b>
-              <span>{t.price.toFixed(3)}</span><span>${t.stake.toFixed(2)}</span>
-              <span className={t.won ? "positive" : "negative"}>{t.won ? "WON" : "LOST"}</span>
-              <strong className={t.pnl >= 0 ? "positive" : "negative"}>{t.pnl >= 0 ? "+" : ""}{t.pnl.toFixed(2)}</strong>
-            </div>) : <div className="paper-empty">THIS STRATEGY TOOK NO BETS ON THE CAPTURED MARKETS</div>}
-          </div>
-          <div className="engine-note"><strong>BACKTEST EVIDENCE ONLY</strong><span>Simulated bets replayed over captured hours by scripts/hourly_engine.py. Not live, not orders, no capital. {engine.markets < 200 ? `${engine.markets} markets is far too few to judge an edge.` : ""}</span></div>
-        </div> : <div className="paper-empty">{engineReason}</div>}
-      </Panel>
-  );
   const pWinChart = (
       <Panel code="W2" title={selWin ? `${selWin.asset} ${selWin.window.toUpperCase()} / UP IMPLIED PROBABILITY` : "WINDOW / UP IMPLIED PROBABILITY"} className="chart-panel"
         action={<span className="badge-safe unavailable">OBSERVATION ONLY</span>}>
@@ -1401,13 +1737,14 @@ export default function Terminal() {
     </nav>
     {(!ready || localKill || noTrade) && <div className={`kill-banner ${mode === "halted" ? "halted" : ""}`}><strong>GLOBAL NO_TRADE</strong><span>{reason}</span></div>}
     <div className="workspace-label"><span>W1</span>{workspace} / BTC + ETH · 5m · 15m · 1h <em>LIVE PUBLIC PROJECTION</em></div>
-    <section className="paper-control-strip" aria-label="Paper week controls">
-      <div className="paper-control-title"><span className="panel-code">P0</span><div><strong>PAPER WEEK RUNNER</strong><small>LOCAL SIMULATION · PUBLIC FEEDS · NO EXTERNAL ORDERS</small></div></div>
-      <label>PRINCIPAL USD<input value={principal} onChange={(event) => setPrincipal(event.target.value)} inputMode="decimal" disabled={paper?.active === true} /></label>
-      <label>BACKUP USD<input value={backup} onChange={(event) => setBackup(event.target.value)} inputMode="decimal" disabled={paper?.active === true} /></label>
-      <button className="paper-start" onClick={() => void startPaper()} disabled={paper === null || paper.active === true || paused || localKill || paperPreflight?.eligible !== true}>START PAPER</button>
-      <button className="paper-stop" onClick={() => void stopPaper()} disabled={paper?.active !== true}>STOP PAPER</button>
-      <div className="paper-state"><StatusDot tone={paper?.active ? "green" : "amber"}/>{paperState}<small>{paperStateDetail}</small></div>
+    <section className="paper-control-strip" aria-label="Paper trading controls">
+      <div className="paper-control-title"><span className="panel-code">P0</span><div><strong>PAPER TRADING CONTROLS</strong><small>NO REAL MONEY · PUBLIC FEEDS ONLY</small></div></div>
+      <label>PAIR PRINCIPAL USD<input value={principal} onChange={(event) => setPrincipal(event.target.value)} inputMode="decimal" disabled={paper?.active === true} /></label>
+      <label>PAIR BACKUP USD<input value={backup} onChange={(event) => setBackup(event.target.value)} inputMode="decimal" disabled={paper?.active === true} /></label>
+      <button className="paper-start" onClick={() => void startPaper()} disabled={paper === null || paper.active === true || paused || localKill || paperPreflight?.eligible !== true}>START PAIR PAPER</button>
+      <button className="paper-stop" onClick={() => void stopPaper()} disabled={paper?.active !== true}>STOP PAIR PAPER</button>
+      <div className="paper-state"><StatusDot tone={paper?.active ? "green" : "amber"}/>PAIR ARB {paper?.active ? "RUNNING" : "IDLE"}<small>Complete-set UP+DOWN when edge exists</small></div>
+      <div className="paper-state"><StatusDot tone={btcLive ? "green" : "amber"}/>BTC WINDOW {btcLive ? "LIVE" : "STOPPED"}<small>{btcLive ? `${btcStatus?.markets_seen ?? 0} markets · ${btcStatus?.open_positions ?? 0} open · see Positions` : "start btc-window-paper worker"}</small></div>
     </section>
 
     {workspace === "SETTINGS" && <section className="configuration-section" aria-label="Effective configuration">
@@ -1435,11 +1772,12 @@ export default function Terminal() {
     {workspace === "MARKETS" && <div className="terminal-grid">{pIdentity}{focusHourly ? pChart : pWinChart}{focusHourly ? pBook : pWinBook}</div>}
     {workspace === "NEURAL" && <div className="ws-flow">{pNeural}{pProfitEngine}</div>}
     {workspace === "RISK" && <div className="ws-stack">{pRisk}{sTelemetry}</div>}
-    {workspace === "POSITIONS" && <div className="ws-flow">{pLive}{pIntraday}{pEngine}</div>}
+    {workspace === "POSITIONS" && <div className="ws-full">{pBtcWindow}</div>}
     {workspace === "SETTLEMENT" && <div className="ws-flow">{pPositions}{pAudit}</div>}
     {workspace === "DATA" && <div className="ws-full">{pData}</div>}
     {workspace === "OPERATIONS" && <div className="ws-flow">{pHealth}{pAudit}</div>}
     {workspace === "AUDIT" && <div className="ws-full">{pAudit}</div>}
+    {workspace === "STRATEGIES" && <div className="ws-full"><StrategyBuilderPanel /></div>}
     <footer className="statusbar"><span><kbd>F1</kbd> Markets</span><span><kbd>F2</kbd> Neural</span><span><kbd>F3</kbd> Risk</span><span><kbd>⌘K</kbd> Display search</span><div/><strong>NO EXTERNAL ORDERS</strong><span>Digest {short(snapshot?.snapshot_digest)}</span><span>Projection v1</span></footer>
   </main>;
 }

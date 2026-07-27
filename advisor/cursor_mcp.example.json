@@ -1,0 +1,16 @@
+# Cursor MCP — Poly Advisor (Spec 094 / ADR 0098)
+#
+# Merge the mcpServers entry into your Cursor MCP settings, or use as a template.
+# Path must be absolute on this laptop.
+
+{
+  "mcpServers": {
+    "poly-advisor": {
+      "command": "/Users/gopalakrishnachennu/Desktop/Devops-9/Poly-Trading/scripts/run-poly-advisor-mcp.sh",
+      "env": {
+        "POLY_ADVISOR_API_URL": "http://127.0.0.1:3000/api/btc-window-paper",
+        "POLY_REPO_ROOT": "/Users/gopalakrishnachennu/Desktop/Devops-9/Poly-Trading"
+      }
+    }
+  }
+}
