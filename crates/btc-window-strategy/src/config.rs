@@ -41,8 +41,13 @@ impl WindowConfig {
                 max_spread_micros: 2 * POINT_MICROS,
                 persistence_secs: 20,
                 reverse_confirm_secs: 5,
-                emergency_stop_lo_micros: 6 * POINT_MICROS,
-                emergency_stop_hi_micros: 8 * POINT_MICROS,
+                // Widened from 6/8 -> 8/10 (matches the 15m band): 48h paper
+                // evidence showed EMERGENCY_PRICE_STOP firing on ordinary 5m
+                // noise (256 fires / -$848 over 48h, 0% win by definition,
+                // the single largest cross-setup cost). See
+                // docs/adr/0101-widen-short-window-emergency-stop-bands.md.
+                emergency_stop_lo_micros: 8 * POINT_MICROS,
+                emergency_stop_hi_micros: 10 * POINT_MICROS,
                 profit_protect_micros: 5 * POINT_MICROS,
                 profit_partial1_micros: 8 * POINT_MICROS,
                 profit_partial2_micros: 12 * POINT_MICROS,
@@ -66,8 +71,9 @@ impl WindowConfig {
                 max_spread_micros: 2 * POINT_MICROS,
                 persistence_secs: 60,
                 reverse_confirm_secs: 20,
-                emergency_stop_lo_micros: 8 * POINT_MICROS,
-                emergency_stop_hi_micros: 10 * POINT_MICROS,
+                // Widened from 8/10 -> 10/12 for the same reason as 5m above.
+                emergency_stop_lo_micros: 10 * POINT_MICROS,
+                emergency_stop_hi_micros: 12 * POINT_MICROS,
                 profit_protect_micros: 7 * POINT_MICROS,
                 profit_partial1_micros: 10 * POINT_MICROS,
                 profit_partial2_micros: 15 * POINT_MICROS,
